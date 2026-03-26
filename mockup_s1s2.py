@@ -114,7 +114,7 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
     y_start = pdf.get_y()
 
     has_extras = strengths or shot_dist
-    card_h = 48 if (strengths and shot_dist) else (42 if has_extras else 40)
+    card_h = 52 if (strengths and shot_dist) else (46 if shot_dist else (42 if strengths else 40))
     if y_start + card_h > pdf.h - 20:
         pdf.add_page()
         y_start = pdf.get_y()
@@ -233,14 +233,11 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
     pdf.set_text_color(90, 90, 90)
     pdf.multi_cell(cw, 3.5, note)
 
-    # Shot distribution bar + strength tags row
-    extra_y = y_start + card_h - (12 if (strengths and shot_dist) else 6)
+    # Shot distribution — 4-column mini section
+    extra_y = y_start + card_h - (16 if (strengths and shot_dist) else (10 if shot_dist else 6))
 
-    # Shot distribution stacked bar
     if shot_dist:
-        bar_y = extra_y
-        bar_h = 4
-        bar_w_total = cw * 0.95
+        sd_y = extra_y
 
         cm = shot_dist.get('close_m', 0)
         ca = shot_dist.get('close_a', 0)
@@ -251,49 +248,64 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
         fm = shot_dist.get('ft_m', 0)
         fa = shot_dist.get('ft_a', 0)
 
-        total_att = ca + ma + ta + fa
-        if total_att > 0:
-            # Zone colors
-            c_close = (41, 128, 185)    # blue
-            c_mid = (243, 156, 18)      # orange
-            c_three = (39, 174, 96)     # green
-            c_ft = (142, 68, 173)       # purple
+        # Zone definitions: (label, made, att, color)
+        c_close = (41, 128, 185)    # blue
+        c_mid = (243, 156, 18)      # orange
+        c_three = (39, 174, 96)     # green
+        c_ft = (142, 68, 173)       # purple
 
-            zones = [
-                ("CLOSE", ca, cm, c_close),
-                ("MID", ma, mm, c_mid),
-                ("3PT", ta, tm, c_three),
-                ("FT", fa, fm, c_ft),
-            ]
+        zones = [
+            ("CLOSE", cm, ca, c_close),
+            ("MID", mm, ma, c_mid),
+            ("3PT", tm, ta, c_three),
+            ("FT", fm, fa, c_ft),
+        ]
 
-            # Draw stacked bar
-            bx = cx
-            for zlabel, att, made, color in zones:
-                if att == 0:
-                    continue
-                seg_w = (att / total_att) * bar_w_total
-                # Background (attempts = lighter)
-                pdf.set_fill_color(min(color[0]+80, 240), min(color[1]+80, 240), min(color[2]+80, 240))
-                pdf.rect(bx, bar_y, seg_w, bar_h, "F")
-                # Foreground (made = darker, proportional)
+        col_w = cw / 4
+        bar_max_h = 5  # max bar height
+
+        # Find max attempts for relative bar sizing
+        max_att = max(ca, ma, ta, fa, 1)
+
+        for i, (zlabel, made, att, color) in enumerate(zones):
+            zx = cx + i * col_w
+            pct = round(made * 100.0 / att) if att > 0 else 0
+
+            # Zone label
+            pdf.set_font("Arial", "B", 5)
+            pdf.set_text_color(*color)
+            pdf.set_xy(zx, sd_y)
+            pdf.cell(col_w, 3, zlabel, align="C")
+
+            # Mini bar (height proportional to attempts volume, fill proportional to FG%)
+            bar_w = col_w * 0.7
+            bar_x = zx + (col_w - bar_w) / 2
+            bar_h = max((att / max_att) * bar_max_h, 1.5) if att > 0 else 0.5
+            bar_top = sd_y + 3.5
+
+            if att > 0:
+                # Background bar (full attempts = light)
+                pdf.set_fill_color(min(color[0]+100, 240), min(color[1]+100, 240), min(color[2]+100, 240))
+                pdf.rect(bar_x, bar_top, bar_w, bar_h, "F")
+                # Foreground (made portion = solid)
                 if made > 0:
-                    made_w = (made / att) * seg_w
+                    made_portion = (made / att) * bar_w
                     pdf.set_fill_color(*color)
-                    pdf.rect(bx, bar_y, made_w, bar_h, "F")
+                    pdf.rect(bar_x, bar_top, made_portion, bar_h, "F")
 
-                # Label inside bar
-                pct = round(made * 100.0 / att) if att > 0 else 0
-                lbl = f"{zlabel} {made}/{att}"
-                pdf.set_font("Arial", "B", 4.5)
-                lbl_w = pdf.get_string_width(lbl)
-                if seg_w > lbl_w + 2:
-                    pdf.set_text_color(255, 255, 255)
-                    pdf.set_xy(bx + 1, bar_y + 0.5)
-                    pdf.cell(seg_w - 2, 3, lbl, align="C")
+            # Made/Att text
+            pdf.set_font("Arial", "B", 5.5)
+            pdf.set_text_color(50, 50, 50)
+            pdf.set_xy(zx, bar_top + bar_h + 0.5)
+            pdf.cell(col_w, 3, f"{made}/{att}" if att > 0 else "-", align="C")
 
-                bx += seg_w
+            # Percentage
+            pdf.set_font("Arial", "", 5)
+            pdf.set_text_color(100, 100, 100)
+            pdf.set_xy(zx, bar_top + bar_h + 3.5)
+            pdf.cell(col_w, 2.5, f"{pct}%" if att > 0 else "", align="C")
 
-            extra_y = bar_y + bar_h + 1.5
+        extra_y = sd_y + 14
 
     # Strength tags (colored pills)
     if strengths:
