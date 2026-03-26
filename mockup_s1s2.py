@@ -2913,7 +2913,7 @@ def main():
         if pname not in starter_names and pstats.get('gp', 0) >= 5:
             bench_players_set.add(pname)
 
-    # Classify: ROTATION (played 5+ of last 8 games or high MPG) vs BENCH
+    # Classify: ROTATION (played 4+ of last 8 games or MPG >= 10) vs BENCH
     rotation_players = []
     bench_only_players = []
     for pname in bench_players_set:
@@ -2925,7 +2925,7 @@ def main():
         total_sub_in = sum(cnt for sname in starter_names
                           for bname, cnt in sub_pairs.get(sname, [])
                           if bname == pname)
-        if gp_last8 >= 5 or (gp_last8 >= 3 and mpg >= 12):
+        if gp_last8 >= 4 or mpg >= 10:
             rotation_players.append((pname, mpg, gp_last8, total_sub_in))
         else:
             bench_only_players.append((pname, mpg, gp_last8, total_sub_in))
