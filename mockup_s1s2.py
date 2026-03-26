@@ -104,18 +104,18 @@ def opp_name(m, s):
     return m["team_b_name"] if s == "A" else m["team_a_name"]
 
 
-def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_path=None, height=None, pos=None, strengths=None, shot_dist=None, percentiles=None):
-    """Render a player card with optional photo, strength tags, shot distribution, and league percentiles.
+def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_path=None, height=None, pos=None, strengths=None, player_zones=None, percentiles=None):
+    """Render a player card with optional photo, strength tags, zone heatmap, and league percentiles.
     strengths: list of (label, color_tuple)
-    shot_dist: dict with keys 'close_m','close_a','mid_m','mid_a','three_m','three_a','ft_m','ft_a'
+    player_zones: dict of zone_key -> {"made": N, "total": N} (same format as team subzone_data)
     percentiles: dict mapping stat key to percentile 0-100 (e.g. {'ppg': 75, 'apg': 87})
     """
     x0 = pdf.l_margin
     w = pdf.w - pdf.l_margin - pdf.r_margin
     y_start = pdf.get_y()
 
-    has_extras = strengths or shot_dist
-    card_h = 56 if (strengths and shot_dist) else (50 if shot_dist else (42 if strengths else 40))
+    has_extras = strengths or player_zones
+    card_h = 56 if (strengths and player_zones) else (50 if player_zones else (42 if strengths else 40))
     if y_start + card_h > pdf.h - 20:
         pdf.add_page()
         y_start = pdf.get_y()
@@ -177,8 +177,8 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
         pos_label_std = "PF"
 
     # ── Layout: LEFT = non-scoring stats + note + tags, RIGHT = scoring panel ──
-    scoring_panel_w = 38 if shot_dist else 0
-    left_w = cw - scoring_panel_w - (2 if shot_dist else 0)
+    scoring_panel_w = 38 if player_zones else 0
+    left_w = cw - scoring_panel_w - (2 if player_zones else 0)
 
     # Draw position badge (anchored to left_w area, not full cw)
     badge_color = pos_colors.get(pos_label_std, (120, 120, 120))
@@ -273,8 +273,10 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
             pdf.cell(tw, 3.5, label, align="C")
             tag_x += tw + 1.5
 
-    # --- RIGHT SIDE: Scoring Panel (2x2 grid) ---
-    if shot_dist:
+    # --- RIGHT SIDE: Scoring Panel (zone heatmap) ---
+    if player_zones:
+        import math
+
         sp_x = cx + left_w + 2
         sp_y = y_start + 2
         sp_w = scoring_panel_w
@@ -294,13 +296,10 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
 
         def _top_badge(pdf, val_text, val_font_size, pct_key, bx, by, bw):
             """Draw value + colored top% badge below it."""
-            # Value
             pdf.set_xy(bx, by)
             pdf.set_font("Arial", "B", val_font_size)
             pdf.set_text_color(30, 30, 30)
             pdf.cell(bw, 4.5, val_text, align="C")
-
-            # Badge
             if percentiles and pct_key in percentiles:
                 pctv = percentiles[pct_key]
                 top_pct = 100 - pctv
@@ -310,7 +309,6 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
                     cr, cg, cb = 200, 60, 50
                 else:
                     cr, cg, cb = 140, 140, 140
-
                 badge_text = f"top {top_pct}%"
                 pdf.set_font("Arial", "B", 5)
                 btw = pdf.get_string_width(badge_text) + 2.5
@@ -323,208 +321,270 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
                 pdf.set_xy(btx, bty + 0.2)
                 pdf.cell(btw, bth - 0.4, badge_text, align="C")
 
-        # PPG column (left half) — label above value
+        # PPG column (left half)
         pdf.set_xy(sp_x + 1, sp_y + 1)
         pdf.set_font("Arial", "", 5)
         pdf.set_text_color(120, 120, 120)
         pdf.cell(half_w, 2.5, "PPG", align="C")
         _top_badge(pdf, f"{ppg_val}", 9, 'ppg', sp_x + 1, sp_y + 3.5, half_w)
 
-        # FG% column (right half) — label above value
+        # FG% column (right half)
         pdf.set_xy(sp_x + 1 + half_w, sp_y + 1)
         pdf.set_font("Arial", "", 5)
         pdf.set_text_color(120, 120, 120)
         pdf.cell(half_w, 2.5, "FG%", align="C")
         _top_badge(pdf, f"{fg_val}%", 9, 'fg', sp_x + 1 + half_w, sp_y + 3.5, half_w)
 
-        # 2x2 zone grid
-        cm = shot_dist.get('close_m', 0)
-        ca = shot_dist.get('close_a', 0)
-        mm = shot_dist.get('mid_m', 0)
-        ma = shot_dist.get('mid_a', 0)
-        tm = shot_dist.get('three_m', 0)
-        ta = shot_dist.get('three_a', 0)
-        fm = shot_dist.get('ft_m', 0)
-        fa = shot_dist.get('ft_a', 0)
+        # ── Mini zone heatmap court (same zone system as section 1.4) ──
+        def _sz_pct(key):
+            d = player_zones.get(key, {"made": 0, "total": 0})
+            m, t = d["made"], d["total"]
+            return m, t, (m / t * 100 if t else 0)
 
-        # Efficiency thresholds per zone (league context)
-        def eff_color(zpct, zone_type):
-            """Return color based on efficiency: green=good, red=bad, gray=average."""
-            # Thresholds: CLOSE >55 good <40 bad, MID >40 good <30 bad,
-            # 3PT >33 good <25 bad, FT >75 good <60 bad
-            thresholds = {
-                "CLOSE": (55, 40), "MID": (40, 30),
-                "3PT": (33, 25), "FT": (75, 60),
-            }
-            good, bad = thresholds.get(zone_type, (50, 35))
-            if zpct >= good:
-                return (34, 139, 34)     # green
-            elif zpct <= bad:
-                return (200, 60, 50)     # red
+        def _zone_color(zpct, threshold=40):
+            if zpct >= threshold:
+                intensity = min(1.0, (zpct - threshold) / 25)
+                return (int(195 - 55 * intensity), int(215 + 25 * intensity), int(195 - 55 * intensity))
             else:
-                return (140, 140, 140)   # gray
+                intensity = min(1.0, (threshold - zpct) / 20)
+                return (int(225 + 20 * intensity), int(190 - 50 * intensity), int(190 - 50 * intensity))
 
-        # ── Mini half-court shot chart ──
-        import math
+        # Court dimensions (miniaturized)
+        zc_x = sp_x + 2
+        zc_w = sp_w - 4
+        zc_y = sp_y + 14
+        zc_h = zc_w * 0.85
 
-        court_x = sp_x + 2
-        court_y = sp_y + 14
-        court_w = sp_w - 4
-        court_h = court_w * 0.85  # slightly taller than wide
-
-        # Zone percentages
-        close_pct = round(cm * 100.0 / ca) if ca > 0 else 0
-        mid_pct = round(mm * 100.0 / ma) if ma > 0 else 0
-        three_pct = round(tm * 100.0 / ta) if ta > 0 else 0
-        ft_pct = round(fm * 100.0 / fa) if fa > 0 else 0
-
-        close_col = eff_color(close_pct, "CLOSE")
-        mid_col = eff_color(mid_pct, "MID")
-        three_col = eff_color(three_pct, "3PT")
-        ft_col = eff_color(ft_pct, "FT")
-
-        # Helper: light version of color for zone fill
-        def light(c, factor=0.35):
-            return tuple(int(c[i] + (255 - c[i]) * (1 - factor)) for i in range(3))
-
-        # ── Court proportions (realistic basketball court ratios) ──
-        # Real half-court: key is 5.8m wide on 15m court = ~39% width
-        # Key length = 5.8m on ~14m half = ~41% depth
-        # 3pt arc radius ≈ 6.75m, court half-width = 7.5m → rx ≈ 90% of half-width
-
-        # 1. 3PT zone (entire court background)
-        pdf.set_fill_color(*light(three_col))
-        pdf.rect(court_x, court_y, court_w, court_h, "F")
-
-        # 2. Mid-range zone (inside 3pt arc)
-        arc_cx = court_x + court_w / 2
-        arc_cy = court_y  # baseline
-        arc_rx = court_w * 0.45  # 3pt arc horizontal radius
-        arc_ry = court_h * 0.85  # 3pt arc vertical extent
-
-        mid_light = light(mid_col)
-        for row_i in range(int(court_h * 10)):
-            y = court_y + row_i / 10.0
-            dy = y - arc_cy
-            if dy < 0: continue
-            if dy > arc_ry: break
-            dx = arc_rx * math.sqrt(1 - (dy / arc_ry) ** 2)
-            x_left = max(arc_cx - dx, court_x)
-            x_right = min(arc_cx + dx, court_x + court_w)
-            if x_right > x_left:
-                pdf.set_fill_color(*mid_light)
-                pdf.rect(x_left, y, x_right - x_left, 0.15, "F")
-
-        # 3. Paint/key zone (realistic proportions)
-        paint_w = court_w * 0.40  # key width ~40% of court
-        paint_h = court_h * 0.42  # key depth ~42% of half
-        paint_x = court_x + (court_w - paint_w) / 2
-        paint_y = court_y
-        pdf.set_fill_color(*light(close_col))
-        pdf.rect(paint_x, paint_y, paint_w, paint_h, "F")
-
-        # 4. Court lines
-        pdf.set_draw_color(80, 80, 80)
-        pdf.set_line_width(0.2)
-        # Court outline
-        pdf.rect(court_x, court_y, court_w, court_h)
-        # Paint/key rectangle
-        pdf.rect(paint_x, paint_y, paint_w, paint_h)
-
-        # Free throw circle (semi-circle at bottom of key)
-        ft_circle_cx = court_x + court_w / 2
-        ft_circle_cy = paint_y + paint_h
-        ft_circle_r = paint_w / 2
-        pdf.set_line_width(0.15)
-        steps = 20
-        for i in range(steps):
-            a1 = math.pi * 0.0 + math.pi * i / steps
-            a2 = math.pi * 0.0 + math.pi * (i + 1) / steps
-            x1 = ft_circle_cx + ft_circle_r * math.cos(a1)
-            y1 = ft_circle_cy + ft_circle_r * math.sin(a1)
-            x2 = ft_circle_cx + ft_circle_r * math.cos(a2)
-            y2 = ft_circle_cy + ft_circle_r * math.sin(a2)
-            pdf.line(x1, y1, x2, y2)
-
-        # Restricted area (small semi-circle near basket)
-        ra_r = court_w * 0.08
-        ra_cy = court_y + 1.8
-        for i in range(steps):
-            a1 = math.pi * i / steps
-            a2 = math.pi * (i + 1) / steps
-            x1 = arc_cx + ra_r * math.cos(a1)
-            y1 = ra_cy + ra_r * math.sin(a1)
-            x2 = arc_cx + ra_r * math.cos(a2)
-            y2 = ra_cy + ra_r * math.sin(a2)
-            pdf.line(x1, y1, x2, y2)
-
-        # Basket (small circle at top center)
-        bask_x = court_x + court_w / 2
-        bask_y = court_y + 1.2
-        pdf.set_fill_color(180, 30, 30)
-        pdf.ellipse(bask_x - 0.7, bask_y - 0.7, 1.4, 1.4, "F")
-
-        # Backboard (short line)
-        bb_w = court_w * 0.12
-        pdf.set_draw_color(80, 80, 80)
-        pdf.set_line_width(0.3)
-        pdf.line(bask_x - bb_w / 2, court_y + 0.3, bask_x + bb_w / 2, court_y + 0.3)
+        # Key positions
+        basket_cx = zc_x + zc_w / 2
+        basket_cy = zc_y + zc_h * 0.04
 
         # 3pt arc
-        pdf.set_draw_color(80, 80, 80)
-        pdf.set_line_width(0.2)
-        arc_steps = 50
-        for i in range(arc_steps):
-            a1 = math.pi * 0.03 + (math.pi * 0.94) * i / arc_steps
-            a2 = math.pi * 0.03 + (math.pi * 0.94) * (i + 1) / arc_steps
-            x1 = arc_cx + arc_rx * math.cos(a1)
-            y1 = arc_cy + arc_ry * math.sin(a1)
-            x2 = arc_cx + arc_rx * math.cos(a2)
-            y2 = arc_cy + arc_ry * math.sin(a2)
-            if court_y <= y1 <= court_y + court_h and court_y <= y2 <= court_y + court_h:
+        three_r = zc_w * 0.44
+        arc_cx = basket_cx
+        arc_cy = basket_cy + 0.5
+
+        # Paint
+        zp_w = zc_w * 0.34
+        zp_h = zc_h * 0.28
+        zp_x = zc_x + (zc_w - zp_w) / 2
+        zp_y = zc_y
+
+        # Corner 3 straight sections
+        corner_h = zc_h * 0.14
+        corner_w = zc_w * 0.08
+
+        def _diag_x_at_y(y_pos, side):
+            dy = y_pos - basket_cy
+            if dy <= 0:
+                return basket_cx
+            if side == "left":
+                return basket_cx - dy * (zc_w / 2) / zc_h
+            else:
+                return basket_cx + dy * (zc_w / 2) / zc_h
+
+        # ── Scan-line zone fill (same approach as section 1.4) ──
+        pdf.set_auto_page_break(auto=False)
+        strip_h = 0.3
+        for yi in range(int(zc_h / strip_h)):
+            y_pos = zc_y + yi * strip_h
+            dy = y_pos - arc_cy
+
+            # Arc boundaries
+            if three_r ** 2 - dy ** 2 > 0 and dy >= 0:
+                arc_half_w = math.sqrt(three_r ** 2 - dy ** 2)
+                arc_left = arc_cx - arc_half_w
+                arc_right = arc_cx + arc_half_w
+            else:
+                arc_left = zc_x
+                arc_right = zc_x + zc_w
+
+            arc_left = max(arc_left, zc_x)
+            arc_right = min(arc_right, zc_x + zc_w)
+
+            dl_x = max(_diag_x_at_y(y_pos, "left"), zc_x)
+            dr_x = min(_diag_x_at_y(y_pos, "right"), zc_x + zc_w)
+
+            in_paint_y = (zp_y <= y_pos < zp_y + zp_h)
+            in_corner = (y_pos < zc_y + corner_h)
+            inside_arc = (dy >= 0 and dy < three_r and three_r ** 2 - dy ** 2 > 0)
+
+            # Outside arc (3PT zones)
+            if arc_left > zc_x:
+                key = "corner3_left" if in_corner else "wing3_left"
+                m, t, p = _sz_pct(key)
+                r, g, b = _zone_color(p, 33)
+                pdf.set_fill_color(r, g, b)
+                pdf.rect(zc_x, y_pos, arc_left - zc_x, strip_h, "F")
+
+            if arc_right < zc_x + zc_w:
+                key = "corner3_right" if in_corner else "wing3_right"
+                m, t, p = _sz_pct(key)
+                r, g, b = _zone_color(p, 33)
+                pdf.set_fill_color(r, g, b)
+                pdf.rect(arc_right, y_pos, zc_x + zc_w - arc_right, strip_h, "F")
+
+            if not inside_arc and y_pos >= arc_cy:
+                m, t, p = _sz_pct("top3")
+                r, g, b = _zone_color(p, 33)
+                pdf.set_fill_color(r, g, b)
+                fill_l = max(dl_x, zc_x)
+                fill_r = min(dr_x, zc_x + zc_w)
+                if fill_r > fill_l:
+                    pdf.rect(fill_l, y_pos, fill_r - fill_l, strip_h, "F")
+                if dl_x > zc_x:
+                    m2, t2, p2 = _sz_pct("wing3_left")
+                    r2, g2, b2 = _zone_color(p2, 33)
+                    pdf.set_fill_color(r2, g2, b2)
+                    pdf.rect(zc_x, y_pos, dl_x - zc_x, strip_h, "F")
+                if dr_x < zc_x + zc_w:
+                    m2, t2, p2 = _sz_pct("wing3_right")
+                    r2, g2, b2 = _zone_color(p2, 33)
+                    pdf.set_fill_color(r2, g2, b2)
+                    pdf.rect(dr_x, y_pos, zc_x + zc_w - dr_x, strip_h, "F")
+
+            # Inside arc (paint + mid-range)
+            if inside_arc:
+                il = max(arc_left, zc_x)
+                ir = min(arc_right, zc_x + zc_w)
+
+                if in_paint_y:
+                    if il < zp_x:
+                        m, t, p = _sz_pct("mid_left")
+                        r, g, b = _zone_color(p, 35)
+                        pdf.set_fill_color(r, g, b)
+                        pdf.rect(il, y_pos, zp_x - il, strip_h, "F")
+                    px_l = max(il, zp_x)
+                    px_r = min(ir, zp_x + zp_w)
+                    if px_r > px_l:
+                        m, t, p = _sz_pct("paint")
+                        r, g, b = _zone_color(p, 45)
+                        pdf.set_fill_color(r, g, b)
+                        pdf.rect(px_l, y_pos, px_r - px_l, strip_h, "F")
+                    if ir > zp_x + zp_w:
+                        m, t, p = _sz_pct("mid_right")
+                        r, g, b = _zone_color(p, 35)
+                        pdf.set_fill_color(r, g, b)
+                        pdf.rect(zp_x + zp_w, y_pos, ir - (zp_x + zp_w), strip_h, "F")
+                else:
+                    if il < dl_x:
+                        m, t, p = _sz_pct("mid_left")
+                        r, g, b = _zone_color(p, 35)
+                        pdf.set_fill_color(r, g, b)
+                        pdf.rect(il, y_pos, min(dl_x, ir) - il, strip_h, "F")
+                    cl = max(il, dl_x)
+                    cr = min(ir, dr_x)
+                    if cr > cl:
+                        m, t, p = _sz_pct("mid_center")
+                        r, g, b = _zone_color(p, 35)
+                        pdf.set_fill_color(r, g, b)
+                        pdf.rect(cl, y_pos, cr - cl, strip_h, "F")
+                    if ir > dr_x:
+                        m, t, p = _sz_pct("mid_right")
+                        r, g, b = _zone_color(p, 35)
+                        pdf.set_fill_color(r, g, b)
+                        pdf.rect(max(dr_x, il), y_pos, ir - max(dr_x, il), strip_h, "F")
+
+        # ── Court lines (white on colored zones) ──
+        pdf.set_draw_color(255, 255, 255)
+        pdf.set_line_width(0.4)
+
+        # Court outline
+        pdf.rect(zc_x, zc_y, zc_w, zc_h, "D")
+        # Paint rectangle
+        pdf.rect(zp_x, zp_y, zp_w, zp_h, "D")
+
+        # Free throw half-circle
+        ft_r = zp_w / 2
+        ft_cx = basket_cx
+        ft_cy = zc_y + zp_h
+        for a in range(0, 180, 3):
+            a1, a2 = math.radians(a), math.radians(a + 3)
+            pdf.line(ft_cx + ft_r * math.cos(a1), ft_cy + ft_r * math.sin(a1),
+                     ft_cx + ft_r * math.cos(a2), ft_cy + ft_r * math.sin(a2))
+
+        # 3-point corner straights
+        corner_lx = zc_x + corner_w
+        corner_rx = zc_x + zc_w - corner_w
+        pdf.line(corner_lx, zc_y, corner_lx, zc_y + corner_h)
+        pdf.line(corner_rx, zc_y, corner_rx, zc_y + corner_h)
+
+        # 3-point arc
+        start_angle = math.degrees(math.asin(max(0, min(1, corner_h / three_r)))) if three_r > 0 else 10
+        for a in range(int(start_angle), 180 - int(start_angle), 2):
+            a1, a2 = math.radians(a), math.radians(a + 2)
+            x1, y1 = arc_cx + three_r * math.cos(a1), arc_cy + three_r * math.sin(a1)
+            x2, y2 = arc_cx + three_r * math.cos(a2), arc_cy + three_r * math.sin(a2)
+            if zc_x <= x1 <= zc_x + zc_w and zc_x <= x2 <= zc_x + zc_w:
                 pdf.line(x1, y1, x2, y2)
-        # Corner 3 vertical lines (connect arc to baseline)
-        corner_x_left = arc_cx - arc_rx
-        corner_x_right = arc_cx + arc_rx
-        corner_h = court_h * 0.08  # short vertical lines at corners
-        if corner_x_left >= court_x:
-            pdf.line(corner_x_left, court_y, corner_x_left, court_y + corner_h)
-        if corner_x_right <= court_x + court_w:
-            pdf.line(corner_x_right, court_y, corner_x_right, court_y + corner_h)
 
-        # 5. Zone labels with stats overlaid on court
-        def _zone_label(zx, zy, made, att, zpct, color):
-            pdf.set_font("Arial", "B", 5)
-            pdf.set_text_color(*color)
-            txt = f"{made}/{att}" if att > 0 else "-"
-            tw = pdf.get_string_width(txt)
-            pdf.set_xy(zx - tw / 2, zy)
-            pdf.cell(tw, 2.5, txt)
-            if att > 0:
-                pct_txt = f"{zpct}%"
-                pw = pdf.get_string_width(pct_txt)
-                pdf.set_xy(zx - pw / 2, zy + 2.5)
-                pdf.set_font("Arial", "B", 5)
-                pdf.cell(pw, 2.5, pct_txt)
+        # Diagonal sector lines
+        pdf.set_line_width(0.25)
+        pdf.line(basket_cx, basket_cy, zc_x, zc_y + zc_h)
+        pdf.line(basket_cx, basket_cy, zc_x + zc_w, zc_y + zc_h)
 
-        # CLOSE label (center of paint)
-        _zone_label(paint_x + paint_w / 2, paint_y + paint_h * 0.25,
-                     cm, ca, close_pct, close_col)
-        # MID label (between paint bottom and arc)
-        mid_label_y = paint_y + paint_h + 1.5
-        _zone_label(court_x + court_w / 2, mid_label_y,
-                     mm, ma, mid_pct, mid_col)
-        # 3PT label (beyond the arc — bottom area of court)
-        _zone_label(court_x + court_w / 2, court_y + court_h * 0.82,
-                     tm, ta, three_pct, three_col)
+        # Basket + backboard
+        pdf.set_draw_color(60, 60, 60)
+        pdf.set_fill_color(60, 60, 60)
+        pdf.ellipse(basket_cx - 0.6, basket_cy - 0.6, 1.2, 1.2, "F")
+        pdf.set_line_width(0.4)
+        bb_w = zp_w * 0.25
+        pdf.line(basket_cx - bb_w / 2, zc_y + 0.5, basket_cx + bb_w / 2, zc_y + 0.5)
+        pdf.set_line_width(0.3)
 
-        # FT below the court as a small bar
-        ft_y = court_y + court_h + 1
+        # ── Zone labels (white boxes with made/total and pct%) ──
+        def _draw_zone_label(lcx, lcy, key, fs_pct=5.5, fs_ratio=4):
+            m, t, p = _sz_pct(key)
+            if t == 0:
+                return
+            box_w = 9
+            box_h = 5
+            bx = lcx - box_w / 2
+            by = lcy - box_h / 2
+            pdf.set_fill_color(255, 255, 255)
+            pdf.set_draw_color(200, 200, 200)
+            pdf.set_line_width(0.1)
+            pdf.rect(bx, by, box_w, box_h, "DF")
+            pdf.set_font("Arial", "", fs_ratio)
+            pdf.set_text_color(80, 80, 80)
+            pdf.set_xy(bx, by + 0.3)
+            pdf.cell(box_w, 2.2, f"{m}/{t}", align="C")
+            pdf.set_font("Arial", "B", fs_pct)
+            pdf.set_text_color(30, 30, 30)
+            pdf.set_xy(bx, by + 2.5)
+            pdf.cell(box_w, 2.5, f"{p:.0f}%", align="C")
+
+        # Paint
+        _draw_zone_label(basket_cx, zc_y + zp_h * 0.55, "paint", 6, 4)
+        # Mid left
+        _draw_zone_label(zp_x - 3.5, zc_y + zp_h * 0.6, "mid_left", 5, 3.5)
+        # Mid right
+        _draw_zone_label(zp_x + zp_w + 3.5, zc_y + zp_h * 0.6, "mid_right", 5, 3.5)
+        # Mid center
+        _draw_zone_label(basket_cx, zc_y + zp_h + zc_h * 0.1, "mid_center", 5, 3.5)
+        # Corner 3 left
+        _draw_zone_label(zc_x + corner_w / 2, zc_y + corner_h * 0.5, "corner3_left", 4.5, 3)
+        # Corner 3 right
+        _draw_zone_label(zc_x + zc_w - corner_w / 2, zc_y + corner_h * 0.5, "corner3_right", 4.5, 3)
+        # Wing 3 left
+        _draw_zone_label(zc_x + 3, zc_y + zc_h * 0.5, "wing3_left", 5, 3.5)
+        # Wing 3 right
+        _draw_zone_label(zc_x + zc_w - 3, zc_y + zc_h * 0.5, "wing3_right", 5, 3.5)
+        # Top 3
+        _draw_zone_label(basket_cx, zc_y + zc_h * 0.8, "top3", 5, 3.5)
+
+        pdf.set_auto_page_break(auto=True, margin=20)
+
+        # FT below the court
+        ft_d = player_zones.get("ft", {"made": 0, "total": 0})
+        ft_m, ft_a = ft_d["made"], ft_d["total"]
+        ft_pct_val = round(ft_m * 100.0 / ft_a) if ft_a > 0 else 0
+        ft_y = zc_y + zc_h + 0.5
         pdf.set_font("Arial", "B", 5)
-        pdf.set_text_color(*ft_col)
-        ft_txt = f"FT: {fm}/{fa} ({ft_pct}%)" if fa > 0 else "FT: -"
-        pdf.set_xy(court_x, ft_y)
-        pdf.cell(court_w, 3, ft_txt, align="C")
+        pdf.set_text_color(80, 80, 80)
+        ft_txt = f"FT: {ft_m}/{ft_a} ({ft_pct_val}%)" if ft_a > 0 else "FT: -"
+        pdf.set_xy(zc_x, ft_y)
+        pdf.cell(zc_w, 3, ft_txt, align="C")
 
     pdf.set_y(y_start + card_h + 2)
 
@@ -1019,10 +1079,19 @@ def main():
             f"AND is_free_throw = 0",
             [our_team_id] + our_gamecodes
         ).fetchall()]
+        # Per-player shots (including FTs) for player zone heatmaps
+        all_player_shots = [dict(r) for r in conn.execute(
+            f"SELECT player_name, hx, hy, is_made, is_free_throw, zone FROM shots "
+            f"WHERE team_id = ? AND gamecode IN ({','.join('?' * len(our_gamecodes))})",
+            [our_team_id] + our_gamecodes
+        ).fetchall()]
     else:
         all_shots = []
+        all_player_shots = []
 
     conn.close()
+
+    player_subzones = {}  # will be populated if shot data exists
 
     if all_shots:
         import math
@@ -1157,6 +1226,26 @@ def main():
             subzone_data[sz]["total"] += 1
             if s["is_made"]:
                 subzone_data[sz]["made"] += 1
+
+        # Build per-player subzone data for player card mini heatmaps
+        player_subzones = {}  # player_name -> {zone_key: {"made": N, "total": N}}
+        for s in all_player_shots:
+            pname = s["player_name"]
+            if not pname:
+                continue
+            if pname not in player_subzones:
+                player_subzones[pname] = {}
+            if s["is_free_throw"]:
+                zone_key = "ft"
+            else:
+                zone_key = classify_sector(s)
+            pzd = player_subzones[pname]
+            if zone_key not in pzd:
+                pzd[zone_key] = {"made": 0, "total": 0}
+            pzd[zone_key]["total"] += 1
+            if s["is_made"]:
+                pzd[zone_key]["made"] += 1
+        print(f"  Built per-player zone data for {len(player_subzones)} players")
 
         def sz_pct(key):
             d = subzone_data.get(key, {"made": 0, "total": 0})
@@ -2350,22 +2439,7 @@ def main():
         "Makkos Dávid":          [("STEALS", C_STL), ("PLAYMAKER", C_AST), ("OREB", C_OREB)],
     }
 
-    # Shot distribution data per player (from PBP events, full season)
-    # Keys: close_m, close_a, mid_m, mid_a, three_m, three_a, ft_m, ft_a
-    player_shot_dist = {
-        "Takács Dániel":         {"close_m": 17, "close_a": 38, "mid_m": 11, "mid_a": 28, "three_m": 26, "three_a": 88, "ft_m": 29, "ft_a": 37},
-        "Fekete Viktor Norbert": {"close_m": 58, "close_a": 111, "mid_m": 5, "mid_a": 20, "three_m": 34, "three_a": 126, "ft_m": 70, "ft_a": 90},
-        "Farkas Attila":         {"close_m": 36, "close_a": 63, "mid_m": 8, "mid_a": 16, "three_m": 40, "three_a": 112, "ft_m": 17, "ft_a": 21},
-        "Bérces Dániel":         {"close_m": 32, "close_a": 51, "mid_m": 5, "mid_a": 14, "three_m": 24, "three_a": 82, "ft_m": 20, "ft_a": 32},
-        "Olasz Ádám Zsolt":      {"close_m": 103, "close_a": 167, "mid_m": 4, "mid_a": 17, "three_m": 2, "three_a": 5, "ft_m": 52, "ft_a": 74},
-        "Andrássy Géza":         {"close_m": 65, "close_a": 111, "mid_m": 2, "mid_a": 14, "three_m": 2, "three_a": 26, "ft_m": 43, "ft_a": 60},
-        "Halasy Örs":            {"close_m": 8, "close_a": 16, "mid_m": 1, "mid_a": 5, "three_m": 3, "three_a": 12, "ft_m": 5, "ft_a": 8},
-        "Pleesz Ádám":           {"close_m": 53, "close_a": 81, "mid_m": 2, "mid_a": 9, "three_m": 3, "three_a": 15, "ft_m": 22, "ft_a": 30},
-        "Krasovec Ádám":         {"close_m": 26, "close_a": 41, "mid_m": 7, "mid_a": 20, "three_m": 17, "three_a": 56, "ft_m": 14, "ft_a": 19},
-        "Zöldi Péter András":    {"close_m": 10, "close_a": 25, "mid_m": 3, "mid_a": 12, "three_m": 12, "three_a": 33, "ft_m": 12, "ft_a": 20},
-        "Karosi Gergely":        {"close_m": 5, "close_a": 12, "mid_m": 2, "mid_a": 6, "three_m": 5, "three_a": 18, "ft_m": 4, "ft_a": 6},
-        "Makkos Dávid":          {"close_m": 30, "close_a": 48, "mid_m": 1, "mid_a": 6, "three_m": 2, "three_a": 17, "ft_m": 10, "ft_a": 25},
-    }
+    # Per-player zone data is now in player_subzones (built from shots table in section 1.4)
 
     # Compute league-wide percentiles from PBP data
     player_percentiles = {}  # name -> {stat: percentile}
@@ -2477,7 +2551,7 @@ def main():
                     photo_path=player_photo_paths.get(name),
                     height=r.get("height"), pos=r.get("pos"),
                     strengths=player_strengths.get(name),
-                    shot_dist=player_shot_dist.get(name),
+                    player_zones=player_subzones.get(name),
                     percentiles=player_percentiles.get(name))
 
     # ROTATION — key bench players who get regular minutes (5+ GP in last 8)
@@ -2516,7 +2590,7 @@ def main():
                     photo_path=player_photo_paths.get(name),
                     height=r.get("height"), pos=r.get("pos"),
                     strengths=player_strengths.get(name),
-                    shot_dist=player_shot_dist.get(name),
+                    player_zones=player_subzones.get(name),
                     percentiles=player_percentiles.get(name))
 
     # BENCH — situational / fringe players
@@ -2550,7 +2624,7 @@ def main():
                     photo_path=player_photo_paths.get(name),
                     height=r.get("height"), pos=r.get("pos"),
                     strengths=player_strengths.get(name),
-                    shot_dist=player_shot_dist.get(name),
+                    player_zones=player_subzones.get(name),
                     percentiles=player_percentiles.get(name))
 
     pdf.output("mockup_s1s2.pdf")
