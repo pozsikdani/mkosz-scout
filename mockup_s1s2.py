@@ -297,32 +297,36 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
         pdf.set_text_color(30, 30, 30)
         pdf.cell(sp_w - 2, 5, f"{ppg_val} PPG", align="C")
 
-        # FG% + league rank label on same line
+        # FG% line
         pdf.set_xy(sp_x + 1, sp_y + 6)
-        pdf.set_font("Arial", "", 6)
+        pdf.set_font("Arial", "", 6.5)
         pdf.set_text_color(100, 100, 100)
         fg_text = f"FG {fg_val}%"
+        pdf.cell(sp_w - 2, 3, fg_text, align="C")
 
+        # League rank badge below FG%
         if percentiles and 'ppg' in percentiles:
             ppg_pct = percentiles['ppg']
-            top_pct = 100 - ppg_pct  # P75 = top 25%
+            top_pct = 100 - ppg_pct
 
-            # Color based on how good: top 30% = green, bottom 60% = red, middle = gray
             if top_pct <= 30:
-                tr, tg, tb = 34, 139, 34      # green
+                br, bg, bb = 34, 139, 34      # green
             elif top_pct >= 60:
-                tr, tg, tb = 200, 60, 50      # red
+                br, bg, bb = 200, 60, 50      # red
             else:
-                tr, tg, tb = 120, 120, 120    # gray
+                br, bg, bb = 140, 140, 140    # gray
 
-            # Draw: "FG 35%  ·  top 25%" with the top% part colored
-            fg_w = pdf.get_string_width(fg_text + "  ")
-            pdf.cell(fg_w, 3, fg_text + "  ")
-            pdf.set_font("Arial", "B", 6)
-            pdf.set_text_color(tr, tg, tb)
-            pdf.cell(sp_w - 2 - fg_w, 3, f"top {top_pct}%")
-        else:
-            pdf.cell(sp_w - 2, 3, fg_text, align="C")
+            badge_text = f"top {top_pct}%"
+            pdf.set_font("Arial", "B", 5.5)
+            btw = pdf.get_string_width(badge_text) + 3
+            bth = 3.5
+            btx = sp_x + (sp_w - btw) / 2
+            bty = sp_y + 9.5
+            pdf.set_fill_color(br, bg, bb)
+            pdf.rect(btx, bty, btw, bth, "F")
+            pdf.set_text_color(255, 255, 255)
+            pdf.set_xy(btx, bty + 0.3)
+            pdf.cell(btw, bth - 0.5, badge_text, align="C")
 
         # 2x2 zone grid
         cm = shot_dist.get('close_m', 0)
@@ -359,9 +363,9 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
         ]
 
         grid_x = sp_x + 1.5
-        grid_y = sp_y + 12
+        grid_y = sp_y + 14
         cell_w = (sp_w - 3) / 2
-        cell_h = (sp_h - 15) / 2
+        cell_h = (sp_h - 17) / 2
         max_att = max(ca, ma, ta, fa, 1)
 
         for idx, (zlabel, made, att) in enumerate(zones_2x2):
