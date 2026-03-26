@@ -259,13 +259,13 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
     pdf.set_text_color(90, 90, 90)
     pdf.multi_cell(left_w, 3.5, note)
 
-    # Strength tags (left side, bottom)
+    # Strength tags (left side, bottom) — uniform dark gray
     if strengths:
         tag_y = y_start + card_h - 6
         tag_x = cx
-        for label, color in strengths:
+        for label, _color in strengths:
             tw = pdf.get_string_width(label) + 4
-            pdf.set_fill_color(*color)
+            pdf.set_fill_color(60, 60, 65)
             pdf.rect(tag_x, tag_y, tw, 4, "F")
             pdf.set_font("Arial", "B", 5.5)
             pdf.set_text_color(255, 255, 255)
@@ -327,16 +327,28 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
         fm = shot_dist.get('ft_m', 0)
         fa = shot_dist.get('ft_a', 0)
 
-        c_close = (41, 128, 185)    # blue
-        c_mid = (243, 156, 18)      # orange
-        c_three = (39, 174, 96)     # green
-        c_ft = (142, 68, 173)       # purple
+        # Efficiency thresholds per zone (league context)
+        def eff_color(zpct, zone_type):
+            """Return color based on efficiency: green=good, red=bad, gray=average."""
+            # Thresholds: CLOSE >55 good <40 bad, MID >40 good <30 bad,
+            # 3PT >33 good <25 bad, FT >75 good <60 bad
+            thresholds = {
+                "CLOSE": (55, 40), "MID": (40, 30),
+                "3PT": (33, 25), "FT": (75, 60),
+            }
+            good, bad = thresholds.get(zone_type, (50, 35))
+            if zpct >= good:
+                return (34, 139, 34)     # green
+            elif zpct <= bad:
+                return (200, 60, 50)     # red
+            else:
+                return (140, 140, 140)   # gray
 
         zones_2x2 = [
-            ("CLOSE", cm, ca, c_close),
-            ("MID", mm, ma, c_mid),
-            ("3PT", tm, ta, c_three),
-            ("FT", fm, fa, c_ft),
+            ("CLOSE", cm, ca),
+            ("MID", mm, ma),
+            ("3PT", tm, ta),
+            ("FT", fm, fa),
         ]
 
         grid_x = sp_x + 1.5
@@ -345,29 +357,32 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
         cell_h = (sp_h - 15) / 2
         max_att = max(ca, ma, ta, fa, 1)
 
-        for idx, (zlabel, made, att, color) in enumerate(zones_2x2):
+        for idx, (zlabel, made, att) in enumerate(zones_2x2):
             col = idx % 2
             row = idx // 2
             zx = grid_x + col * cell_w
             zy = grid_y + row * cell_h
 
             zpct = round(made * 100.0 / att) if att > 0 else 0
+            color = eff_color(zpct, zlabel)
 
-            # Zone label
+            # Zone label — colored by efficiency
             pdf.set_font("Arial", "B", 5.5)
             pdf.set_text_color(*color)
             pdf.set_xy(zx, zy)
             pdf.cell(cell_w, 3, zlabel, align="C")
 
-            # Mini bar
+            # Mini bar — gray background, colored fill based on efficiency
             bar_w = cell_w * 0.8
             bar_x = zx + (cell_w - bar_w) / 2
             bar_h = max((att / max_att) * 4, 1.5) if att > 0 else 0.5
             bar_top = zy + 3
 
             if att > 0:
-                pdf.set_fill_color(min(color[0]+100, 240), min(color[1]+100, 240), min(color[2]+100, 240))
+                # Light gray background (total attempts)
+                pdf.set_fill_color(220, 220, 220)
                 pdf.rect(bar_x, bar_top, bar_w, bar_h, "F")
+                # Fill = made portion, colored by efficiency
                 if made > 0:
                     made_w = (made / att) * bar_w
                     pdf.set_fill_color(*color)
