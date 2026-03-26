@@ -123,13 +123,20 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
     pdf.set_fill_color(180, 30, 30) if is_starter else pdf.set_fill_color(160, 160, 160)
     pdf.rect(x0, y_start, 2, card_h, "F")
 
-    # Photo (if available)
+    # Photo (if available) — preserve original aspect ratio
     photo_w = 0
     if photo_path:
         import os
         if os.path.exists(photo_path):
-            ph = card_h - 4  # photo height
-            pw = ph * 0.7    # aspect ratio ~0.7 for portrait
+            from PIL import Image as PILImg
+            try:
+                with PILImg.open(photo_path) as pimg:
+                    orig_w, orig_h = pimg.size
+                ar = orig_w / orig_h  # original aspect ratio
+            except Exception:
+                ar = 0.7  # fallback
+            ph = card_h - 4  # photo height in mm
+            pw = ph * ar      # width preserving aspect ratio
             pdf.image(photo_path, x0 + 4, y_start + 2, pw, ph)
             photo_w = pw + 4
 
@@ -1983,36 +1990,39 @@ def main():
     pdf.cell(0, 6, "STARTERS")
     pdf.ln(7)
 
+    # Starters sorted by position: PG → W → W → F → C
     starters = [
-        ("#7", "Fekete Viktor Norbert", "Primary Scorer / Guard",
+        ("#11", "Takács Dániel", "Floor General / Point Guard",
+         {"mpg": "30", "ppg": "8.6", "fg": "35", "3p": "30", "ft": "78",
+          "rpg": "3.1", "apg": "4.1", "tpg": "2.2", "fpg": "2.3"},
+         "Top assist man (4.1 APG). Most minutes on the team. "
+         "Turnover-prone (2.2 TPG). Pressure the ball."),
+        ("#7", "Fekete Viktor Norbert", "Primary Scorer / Wing",
          {"mpg": "29", "ppg": "13.0", "fg": "38", "3p": "27", "ft": "78",
           "rpg": "5.4", "apg": "3.4", "tpg": "2.0", "fpg": "1.8"},
          "Does everything but shoots inefficiently. Volume shooter (11.2 FGA). "
          "Dare him to shoot 3s (27%). Guard the drive and mid-range."),
+        ("#9", "Farkas Attila", "Combo Guard / Wing",
+         {"mpg": "25", "ppg": "10.2", "fg": "44", "3p": "36", "ft": "81",
+          "rpg": "3.0", "apg": "3.0", "tpg": "1.1", "fpg": "2.1"},
+         "Best shooter on the team (36% 3P). Hot form: 13.6 PPG last 5 on 54% FG. "
+         "Most dangerous offensive weapon."),
+        ("#12", "Bérces Dániel", "Wing / Forward",
+         {"mpg": "23", "ppg": "6.9", "fg": "41", "3p": "29", "ft": "62",
+          "rpg": "3.8", "apg": "1.3", "tpg": "0.9", "fpg": "2.5"},
+         "Consistent starter (5/5 last). Foul-prone (2.5 FPG). "
+         "Weak FT (62%) — foul him in crunch time."),
         ("#34", "Olasz Ádám Zsolt", "Inside Presence / Center",
          {"mpg": "19", "ppg": "11.3", "fg": "58", "3p": "-", "ft": "70",
           "rpg": "5.4", "apg": "2.0", "tpg": "1.3", "fpg": "1.5"},
          "Paint beast — 59% from paint (167 att). No 3PT threat (5 att all season). "
          "Front him, deny the entry pass."),
-        ("#11", "Takács Dániel", "Floor General / Guard",
-         {"mpg": "30", "ppg": "8.6", "fg": "35", "3p": "30", "ft": "78",
-          "rpg": "3.1", "apg": "4.1", "tpg": "2.2", "fpg": "2.3"},
-         "Top assist man (4.1 APG). Most minutes on the team. "
-         "Turnover-prone (2.2 TPG). Pressure the ball."),
-        ("#12", "Bérces Dániel", "Wing / Guard",
-         {"mpg": "23", "ppg": "6.9", "fg": "41", "3p": "29", "ft": "62",
-          "rpg": "3.8", "apg": "1.3", "tpg": "0.9", "fpg": "2.5"},
-         "Consistent starter (5/5 last). Foul-prone (2.5 FPG). "
-         "Weak FT (62%) — foul him in crunch time."),
-        ("#15", "Andrássy Géza", "Forward / Big",
-         {"mpg": "16", "ppg": "8.0", "fg": "46", "3p": "8", "ft": "72",
-          "rpg": "4.5", "apg": "1.4", "tpg": "1.4", "fpg": "2.0"},
-         "Top shot blocker (0.6 BPG). No 3PT range (8%). "
-         "Effective inside (55% paint FG)."),
     ]
 
     # Download photos for all player card players (reuse existing + fetch missing)
-    all_card_names = [n for _, n, *_ in starters] + ["Farkas Attila", "Makkos Dávid", "Pleesz Ádám"]
+    all_card_names = [n for _, n, *_ in starters] + [
+        "Andrássy Géza", "Halasy Örs", "Pleesz Ádám", "Krasovec Ádám",
+        "Zöldi Péter András", "Karosi Gergely", "Makkos Dávid"]
     for pname in all_card_names:
         if pname not in player_photo_paths:
             pic_url = roster_map.get(pname, {}).get("pic_url", "")
@@ -2020,8 +2030,7 @@ def main():
                 try:
                     img_resp = requests.get(pic_url, timeout=5)
                     img = Image.open(BytesIO(img_resp.content)).convert("RGBA")
-                    # Keep portrait aspect for card (don't square crop)
-                    img = img.resize((154, 220), Image.LANCZOS)
+                    # Keep original size for card (aspect ratio preserved in player_card)
                     tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
                     img.convert("RGB").save(tmp.name, "PNG")
                     player_photo_paths[pname] = tmp.name
@@ -2034,27 +2043,65 @@ def main():
                     photo_path=player_photo_paths.get(name),
                     height=r.get("height"), pos=r.get("pos"))
 
+    # ROTATION — key bench players who get regular minutes (5+ GP in last 8)
+    pdf.ln(2)
+    pdf.set_font("Arial", "B", 10)
+    pdf.set_text_color(180, 130, 30)
+    pdf.cell(0, 6, "ROTATION")
+    pdf.ln(7)
+
+    rotation = [
+        ("#15", "Andrássy Géza", "Backup Center / Big",
+         {"mpg": "16", "ppg": "8.0", "fg": "46", "3p": "8", "ft": "72",
+          "rpg": "4.5", "apg": "1.4", "tpg": "1.4", "fpg": "2.0"},
+         "Primary Olasz backup (14x sub). Top shot blocker (0.6 BPG). "
+         "No 3PT range (8%). Effective inside (55% paint FG)."),
+        ("#0", "Halasy Örs", "Wing Backup",
+         {"mpg": "11", "ppg": "3.4", "fg": "38", "3p": "25", "ft": "60",
+          "rpg": "2.0", "apg": "0.6", "tpg": "0.4", "fpg": "1.2"},
+         "Bérces primary backup (8x sub). Young wing (2008 born, 200cm). "
+         "Limited offensive role but gives size on the wing."),
+        ("#20", "Pleesz Ádám", "Swing Big",
+         {"mpg": "12", "ppg": "4.3", "fg": "55", "3p": "20", "ft": "73",
+          "rpg": "3.6", "apg": "1.1", "tpg": "0.6", "fpg": "1.8"},
+         "Swing sub — covers both Bérces (7x) and center. "
+         "Efficient inside (55% FG). Low turnover, steady."),
+        ("#14", "Krasovec Ádám", "Backup Big / Wing",
+         {"mpg": "10", "ppg": "3.0", "fg": "40", "3p": "20", "ft": "60",
+          "rpg": "2.8", "apg": "0.4", "tpg": "0.6", "fpg": "1.4"},
+         "Tallest player (207cm). Backup for Fekete + Farkas. "
+         "Physical presence but limited skill set."),
+    ]
+
+    for jersey, name, role, stats, note in rotation:
+        r = roster_map.get(name, {})
+        player_card(pdf, name, jersey, role, stats, note, is_starter=False,
+                    photo_path=player_photo_paths.get(name),
+                    height=r.get("height"), pos=r.get("pos"))
+
+    # BENCH — situational / fringe players
     pdf.ln(2)
     pdf.set_font("Arial", "B", 10)
     pdf.set_text_color(120, 120, 120)
-    pdf.cell(0, 6, "KEY BENCH PLAYERS")
+    pdf.cell(0, 6, "BENCH")
     pdf.ln(7)
 
     bench = [
-        ("#9", "Farkas Attila", "Bench Scorer / Wing",
-         {"mpg": "25", "ppg": "10.2", "fg": "44", "3p": "36", "ft": "81",
-          "rpg": "3.0", "apg": "3.0", "tpg": "1.1", "fpg": "2.1"},
-         "Best shooter on the team (36% 3P). Hot form: 13.6 PPG last 5 on 54% FG. "
-         "Most dangerous bench weapon."),
+        ("#2", "Zöldi Péter András", "Young Guard",
+         {"mpg": "13", "ppg": "5.8", "fg": "35", "3p": "28", "ft": "65",
+          "rpg": "1.5", "apg": "1.2", "tpg": "1.0", "fpg": "1.0"},
+         "Guard backup for Takács (4x) and Farkas (5x). "
+         "Young (2008 born). Developing player, 4/8 GP last 8."),
+        ("#25", "Karosi Gergely", "Wing Depth",
+         {"mpg": "14", "ppg": "3.3", "fg": "35", "3p": "25", "ft": "70",
+          "rpg": "1.8", "apg": "0.8", "tpg": "0.6", "fpg": "1.0"},
+         "Fekete backup (3x sub). 3/8 GP in last 8. "
+         "Situational wing — limited minutes."),
         ("#3", "Makkos Dávid", "Energy / Forward",
          {"mpg": "20", "ppg": "6.0", "fg": "46", "3p": "12", "ft": "40",
           "rpg": "3.2", "apg": "2.2", "tpg": "1.4", "fpg": "2.5"},
          "Only 13 GP — availability issues. Horrible FT (40%). "
-         "Good rebounder + passer for his size."),
-        ("#20", "Pleesz Ádám", "Rotation Big",
-         {"mpg": "18", "ppg": "6.1", "fg": "55", "3p": "20", "ft": "73",
-          "rpg": "3.6", "apg": "1.1", "tpg": "0.6", "fpg": "1.8"},
-         "Efficient inside (55% FG). Low turnover, steady role player."),
+         "Good rebounder + passer for his size. Not in recent rotation."),
     ]
 
     for jersey, name, role, stats, note in bench:
