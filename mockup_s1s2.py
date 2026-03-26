@@ -115,7 +115,7 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
     y_start = pdf.get_y()
 
     has_extras = strengths or shot_dist
-    card_h = 52 if (strengths and shot_dist) else (46 if shot_dist else (42 if strengths else 40))
+    card_h = 56 if (strengths and shot_dist) else (50 if shot_dist else (42 if strengths else 40))
     if y_start + card_h > pdf.h - 20:
         pdf.add_page()
         y_start = pdf.get_y()
@@ -202,9 +202,10 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
     pdf.set_text_color(120, 120, 120)
     pdf.cell(role_w, 5, role_line, align="R")
 
-    # Stats row
-    stat_labels = ["MPG", "PPG", "FG%", "3P%", "FT%", "RPG", "APG", "TOV", "PF"]
-    stat_vals = [stats.get(k, "-") for k in ["mpg", "ppg", "fg", "3p", "ft", "rpg", "apg", "tpg", "fpg"]]
+    # Stats row — compact: MPG, PPG, FG%, RPG, APG, TOV, PF
+    stat_labels = ["MPG", "PPG", "FG%", "RPG", "APG", "TOV", "PF"]
+    stat_keys =   ["mpg", "ppg", "fg",  "rpg", "apg", "tpg", "fpg"]
+    stat_vals = [stats.get(k, "-") for k in stat_keys]
     col_w = cw / len(stat_labels)
     y_s = y_start + 10
 
@@ -215,7 +216,7 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
         pdf.cell(col_w, 3.5, lbl, align="C")
 
     # Stat key mapping for percentiles lookup
-    stat_pct_keys = ["mpg", "ppg", "fg", "3p", "ft", "rpg", "apg", "tpg", "fpg"]
+    stat_pct_keys = ["mpg", "ppg", None, "rpg", "apg", "tpg", "fpg"]
 
     pdf.set_font("Arial", "B", 9)
     for i, val in enumerate(stat_vals):
@@ -223,17 +224,16 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
         is_bad = False
         try:
             v = float(val)
-            if stat_labels[i] == "3P%" and v < 30: is_bad = True
-            elif stat_labels[i] == "FT%" and v < 65: is_bad = True
-            elif stat_labels[i] == "FPG" and v >= 2.5: is_bad = True
+            if stat_labels[i] == "PF" and v >= 2.5: is_bad = True
         except (ValueError, TypeError):
             pass
         pdf.set_text_color(200, 60, 60) if is_bad else pdf.set_text_color(30, 30, 30)
         pdf.cell(col_w, 5, str(val), align="C")
 
         # Percentile mini bar under each stat value
-        if percentiles and stat_pct_keys[i] in percentiles:
-            pct = percentiles[stat_pct_keys[i]]
+        pct_key = stat_pct_keys[i]
+        if percentiles and pct_key and pct_key in percentiles:
+            pct = percentiles[pct_key]
             bar_w = col_w * 0.75
             bar_h = 1.5
             bar_x = cx + i * col_w + (col_w - bar_w) / 2
@@ -241,8 +241,7 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
             # Background (gray track)
             pdf.set_fill_color(220, 220, 220)
             pdf.rect(bar_x, bar_y, bar_w, bar_h, "F")
-            # Percentile fill — color based on value
-            # For TPG and FPG, lower is better (invert color)
+            # For TOV and PF, lower is better (invert color)
             invert = stat_labels[i] in ("TOV", "PF")
             display_pct = 100 - pct if invert else pct
             if display_pct >= 70:
@@ -255,17 +254,11 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
             pdf.set_fill_color(pr, pg, pb)
             pdf.rect(bar_x, bar_y, fill_w, bar_h, "F")
 
-    # Note
-    pdf.set_xy(cx, y_s + 10)
-    pdf.set_font("Arial", "I", 7)
-    pdf.set_text_color(90, 90, 90)
-    pdf.multi_cell(cw, 3.5, note)
-
-    # Shot distribution — 4-column mini section
-    extra_y = y_start + card_h - (16 if (strengths and shot_dist) else (10 if shot_dist else 6))
+    # Shot distribution — inline right after stats (before note)
+    sd_end_y = y_s + 11  # default if no shot dist
 
     if shot_dist:
-        sd_y = extra_y
+        sd_y = y_s + 11  # right below stats
 
         cm = shot_dist.get('close_m', 0)
         ca = shot_dist.get('close_a', 0)
@@ -333,11 +326,17 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
             pdf.set_xy(zx, bar_top + bar_h + 3.5)
             pdf.cell(col_w, 2.5, f"{pct}%" if att > 0 else "", align="C")
 
-        extra_y = sd_y + 14
+        sd_end_y = sd_y + 14
+
+    # Note (after shot distribution or after stats)
+    pdf.set_xy(cx, sd_end_y)
+    pdf.set_font("Arial", "I", 7)
+    pdf.set_text_color(90, 90, 90)
+    pdf.multi_cell(cw, 3.5, note)
 
     # Strength tags (colored pills)
     if strengths:
-        tag_y = extra_y
+        tag_y = y_start + card_h - 6
         tag_x = cx
         for label, color in strengths:
             tw = pdf.get_string_width(label) + 4
