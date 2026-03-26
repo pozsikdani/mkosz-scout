@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 .env
+*.pdf
+.DS_Store
+player_photos/
