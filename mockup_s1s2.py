@@ -323,19 +323,19 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
                 pdf.set_xy(btx, bty + 0.2)
                 pdf.cell(btw, bth - 0.4, badge_text, align="C")
 
-        # PPG column (left half)
-        _top_badge(pdf, f"{ppg_val}", 9, 'ppg', sp_x + 1, sp_y + 1, half_w)
-        pdf.set_xy(sp_x + 1, sp_y + 8.5)
+        # PPG column (left half) — label above value
+        pdf.set_xy(sp_x + 1, sp_y + 1)
         pdf.set_font("Arial", "", 5)
         pdf.set_text_color(120, 120, 120)
         pdf.cell(half_w, 2.5, "PPG", align="C")
+        _top_badge(pdf, f"{ppg_val}", 9, 'ppg', sp_x + 1, sp_y + 3.5, half_w)
 
-        # FG% column (right half)
-        _top_badge(pdf, f"{fg_val}%", 9, 'fg', sp_x + 1 + half_w, sp_y + 1, half_w)
-        pdf.set_xy(sp_x + 1 + half_w, sp_y + 8.5)
+        # FG% column (right half) — label above value
+        pdf.set_xy(sp_x + 1 + half_w, sp_y + 1)
         pdf.set_font("Arial", "", 5)
         pdf.set_text_color(120, 120, 120)
         pdf.cell(half_w, 2.5, "FG%", align="C")
+        _top_badge(pdf, f"{fg_val}%", 9, 'fg', sp_x + 1 + half_w, sp_y + 3.5, half_w)
 
         # 2x2 zone grid
         cm = shot_dist.get('close_m', 0)
