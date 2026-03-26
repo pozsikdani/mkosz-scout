@@ -287,46 +287,55 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
         pdf.set_fill_color(180, 30, 30)
         pdf.rect(sp_x, sp_y, 0.5, sp_h, "F")
 
-        # Panel header: PPG + league percentile label
+        # Panel header: PPG and FG% side by side, each with own badge
         ppg_val = stats.get('ppg', '-')
         fg_val = stats.get('fg', '-')
+        half_w = (sp_w - 2) / 2
 
-        # PPG value
-        pdf.set_xy(sp_x + 1, sp_y + 1)
-        pdf.set_font("Arial", "B", 10)
-        pdf.set_text_color(30, 30, 30)
-        pdf.cell(sp_w - 2, 5, f"{ppg_val} PPG", align="C")
+        def _top_badge(pdf, val_text, val_font_size, pct_key, bx, by, bw):
+            """Draw value + colored top% badge below it."""
+            # Value
+            pdf.set_xy(bx, by)
+            pdf.set_font("Arial", "B", val_font_size)
+            pdf.set_text_color(30, 30, 30)
+            pdf.cell(bw, 4.5, val_text, align="C")
 
-        # FG% line
-        pdf.set_xy(sp_x + 1, sp_y + 6)
-        pdf.set_font("Arial", "", 6.5)
-        pdf.set_text_color(100, 100, 100)
-        fg_text = f"FG {fg_val}%"
-        pdf.cell(sp_w - 2, 3, fg_text, align="C")
+            # Badge
+            if percentiles and pct_key in percentiles:
+                pctv = percentiles[pct_key]
+                top_pct = 100 - pctv
+                if top_pct <= 30:
+                    cr, cg, cb = 34, 139, 34
+                elif top_pct >= 60:
+                    cr, cg, cb = 200, 60, 50
+                else:
+                    cr, cg, cb = 140, 140, 140
 
-        # League rank badge below FG%
-        if percentiles and 'ppg' in percentiles:
-            ppg_pct = percentiles['ppg']
-            top_pct = 100 - ppg_pct
+                badge_text = f"top {top_pct}%"
+                pdf.set_font("Arial", "B", 5)
+                btw = pdf.get_string_width(badge_text) + 2.5
+                bth = 3
+                btx = bx + (bw - btw) / 2
+                bty = by + 5
+                pdf.set_fill_color(cr, cg, cb)
+                pdf.rect(btx, bty, btw, bth, "F")
+                pdf.set_text_color(255, 255, 255)
+                pdf.set_xy(btx, bty + 0.2)
+                pdf.cell(btw, bth - 0.4, badge_text, align="C")
 
-            if top_pct <= 30:
-                br, bg, bb = 34, 139, 34      # green
-            elif top_pct >= 60:
-                br, bg, bb = 200, 60, 50      # red
-            else:
-                br, bg, bb = 140, 140, 140    # gray
+        # PPG column (left half)
+        _top_badge(pdf, f"{ppg_val}", 9, 'ppg', sp_x + 1, sp_y + 1, half_w)
+        pdf.set_xy(sp_x + 1, sp_y + 8.5)
+        pdf.set_font("Arial", "", 5)
+        pdf.set_text_color(120, 120, 120)
+        pdf.cell(half_w, 2.5, "PPG", align="C")
 
-            badge_text = f"top {top_pct}%"
-            pdf.set_font("Arial", "B", 5.5)
-            btw = pdf.get_string_width(badge_text) + 3
-            bth = 3.5
-            btx = sp_x + (sp_w - btw) / 2
-            bty = sp_y + 9.5
-            pdf.set_fill_color(br, bg, bb)
-            pdf.rect(btx, bty, btw, bth, "F")
-            pdf.set_text_color(255, 255, 255)
-            pdf.set_xy(btx, bty + 0.3)
-            pdf.cell(btw, bth - 0.5, badge_text, align="C")
+        # FG% column (right half)
+        _top_badge(pdf, f"{fg_val}%", 9, 'fg', sp_x + 1 + half_w, sp_y + 1, half_w)
+        pdf.set_xy(sp_x + 1 + half_w, sp_y + 8.5)
+        pdf.set_font("Arial", "", 5)
+        pdf.set_text_color(120, 120, 120)
+        pdf.cell(half_w, 2.5, "FG%", align="C")
 
         # 2x2 zone grid
         cm = shot_dist.get('close_m', 0)
@@ -2267,7 +2276,13 @@ def main():
                 SUM(CASE WHEN event_type='STL' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as spg,
                 SUM(CASE WHEN event_type='BLK' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as bpg,
                 SUM(CASE WHEN event_type='TOV' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as topg,
-                SUM(CASE WHEN event_type='FOUL' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as fpg
+                SUM(CASE WHEN event_type='FOUL' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as fpg,
+                CASE WHEN SUM(CASE WHEN event_type IN ('CLOSE_MADE','MID_MADE','DUNK_MADE','THREE_MADE',
+                    'CLOSE_MISS','MID_MISS','DUNK_MISS','THREE_MISS') THEN 1 ELSE 0 END) >= 30
+                    THEN ROUND(SUM(CASE WHEN event_type IN ('CLOSE_MADE','MID_MADE','DUNK_MADE','THREE_MADE') THEN 1 ELSE 0 END)*100.0 /
+                         SUM(CASE WHEN event_type IN ('CLOSE_MADE','MID_MADE','DUNK_MADE','THREE_MADE',
+                             'CLOSE_MISS','MID_MISS','DUNK_MISS','THREE_MISS') THEN 1 ELSE 0 END), 1)
+                    ELSE NULL END as fg_pct
             FROM events e JOIN matches m ON e.match_id=m.match_id
             WHERE m.comp_code=? AND e.player_name != ''
             GROUP BY e.player_name HAVING gp >= 10
@@ -2275,9 +2290,12 @@ def main():
         all_players = pct_cur.fetchall()
         pbp_pct.close()
 
-        # Build sorted lists for each stat
+        # Build sorted lists for each stat (fg_pct at index 10, skip NULLs)
         stat_indices = {'ppg': 3, 'apg': 4, 'rpg': 5, 'spg': 6, 'bpg': 7, 'tpg': 8, 'fpg': 9}
         sorted_stats = {k: sorted(r[v] for r in all_players) for k, v in stat_indices.items()}
+        # FG% separately (skip NULLs)
+        fg_vals = sorted(r[10] for r in all_players if r[10] is not None)
+        sorted_stats['fg'] = fg_vals
 
         def calc_pctile(val, sorted_list):
             return round(sum(1 for v in sorted_list if v < val) * 100.0 / max(len(sorted_list), 1))
@@ -2290,6 +2308,9 @@ def main():
                 pcts = {}
                 for stat_key, idx in stat_indices.items():
                     pcts[stat_key] = calc_pctile(row[idx], sorted_stats[stat_key])
+                # FG% percentile (if available)
+                if row[10] is not None and fg_vals:
+                    pcts['fg'] = calc_pctile(row[10], fg_vals)
                 player_percentiles[name] = pcts
         print(f"  Computed percentiles for {len(player_percentiles)} Vasas players (league: {len(all_players)})")
     except Exception as e:
