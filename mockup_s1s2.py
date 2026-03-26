@@ -150,16 +150,52 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
     pdf.set_text_color(30, 30, 30)
     pdf.cell(cw * 0.6, 5, f"{jersey}  {name}")
 
-    # Role + height + pos on right
+    # Position badge (colored) + role + height on right
+    # Map MKOSZ pos to standard abbreviations + colors
+    pos_map = {
+        "1": "PG", "1-2": "PG", "2-3": "SG",
+        "3-4": "SF", "4-5": "PF",  # or C depending on context
+    }
+    pos_colors = {
+        "PG": (41, 128, 185),    # blue
+        "SG": (39, 174, 96),     # green
+        "SF": (243, 156, 18),    # orange
+        "PF": (192, 57, 43),     # red
+        "C":  (142, 68, 173),    # purple
+    }
+    # Determine position label
+    pos_label_std = pos_map.get(pos, "")
+    # Override for known centers (4-5 with height >= 200 or role contains Center)
+    if pos == "4-5" and (role and "Center" in role):
+        pos_label_std = "C"
+    elif pos == "4-5":
+        pos_label_std = "PF"
+
+    # Draw position badge
+    badge_color = pos_colors.get(pos_label_std, (120, 120, 120))
+    if pos_label_std:
+        badge_w = 10
+        badge_h = 5.5
+        badge_x = cx + cw - badge_w
+        badge_y = y_start + 1.5
+        pdf.set_fill_color(*badge_color)
+        pdf.rect(badge_x, badge_y, badge_w, badge_h, "F")
+        # Round corners effect (small rects at corners) - skip for simplicity
+        pdf.set_font("Arial", "B", 8)
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_xy(badge_x, badge_y + 0.5)
+        pdf.cell(badge_w, badge_h - 1, pos_label_std, align="C")
+
+    # Role + height below badge
     role_line = role
-    if height and pos:
-        role_line = f"{pos} | {height}cm | {role}"
-    elif height:
+    if height:
         role_line = f"{height}cm | {role}"
-    pdf.set_xy(cx + cw * 0.6, y_start + 2)
-    pdf.set_font("Arial", "I", 7)
+    role_x = cx + cw * 0.45
+    role_w = cw * 0.55 - (12 if pos_label_std else 0)
+    pdf.set_xy(role_x, y_start + 2)
+    pdf.set_font("Arial", "I", 6.5)
     pdf.set_text_color(120, 120, 120)
-    pdf.cell(cw * 0.4, 5, role_line, align="R")
+    pdf.cell(role_w, 5, role_line, align="R")
 
     # Stats row
     stat_labels = ["MPG", "PPG", "FG%", "3P%", "FT%", "RPG", "APG", "TPG", "FPG"]
