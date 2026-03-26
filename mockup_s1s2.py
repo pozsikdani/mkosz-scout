@@ -1778,7 +1778,189 @@ def main():
     pdf.set_text_color(140, 140, 140)
     pdf.cell(0, 3, "MPG = predicted minutes per game (from sub tracking, last 8 games). (X') = avg minutes.", align="L")
 
+    pdf.ln(4)
+
+    # ── 2.1c Best/Worst Lineups ──────────────────────────────────
+    pdf.subsection("2.1c Lineup Net Rating (Top 5 / Bottom 5)")
+    pdf.ln(3)
+
+    # Compute lineup data from PBP
+    lineup_data = []  # [(names_list, min, gp, pf, pa, net, nrtg)]
+    try:
+        pbp_conn3 = sqlite3.connect(PBP_DB)
+        pbp_cur3 = pbp_conn3.cursor()
+        pbp_cur3.execute("""
+            SELECT m.match_id,
+                   CASE WHEN m.team_a=? THEN 'A' ELSE 'B' END as vs
+            FROM matches m WHERE m.comp_code=?
+              AND (m.team_a=? OR m.team_b=?)
+        """, (team_exact, COMP, team_exact, team_exact))
+        lu_matches = pbp_cur3.fetchall()
+
+        from collections import defaultdict as dd
+        lu_stats = dd(lambda: {'min': 0.0, 'pf': 0, 'pa': 0, 'games': set()})
+
+        for mid, vs in lu_matches:
+            pbp_cur3.execute("""
+                WITH fsi AS (
+                    SELECT player_in, MIN(event_seq) fi FROM substitutions WHERE match_id=? AND team=? GROUP BY player_in
+                ), fso AS (
+                    SELECT player_out, MIN(event_seq) fo FROM substitutions WHERE match_id=? AND team=? GROUP BY player_out
+                )
+                SELECT fso.player_out FROM fso
+                WHERE NOT EXISTS (SELECT 1 FROM fsi WHERE fsi.player_in=fso.player_out AND fsi.fi<fso.fo)
+            """, (mid, vs, mid, vs))
+            oc = set(r[0] for r in pbp_cur3.fetchall())
+            if len(oc) != 5:
+                continue
+
+            pbp_cur3.execute("""
+                SELECT s.event_seq, s.player_out, s.player_in,
+                       COALESCE((SELECT e.minute FROM events e WHERE e.match_id=s.match_id
+                        AND e.event_seq <= s.event_seq ORDER BY e.event_seq DESC LIMIT 1), 0)
+                FROM substitutions s WHERE s.match_id=? AND s.team=?
+                ORDER BY s.event_seq
+            """, (mid, vs))
+            subs_data = pbp_cur3.fetchall()
+
+            pbp_cur3.execute("""
+                SELECT event_seq, team, points, minute FROM events
+                WHERE match_id=? AND points > 0 ORDER BY event_seq
+            """, (mid,))
+            scoring_data = pbp_cur3.fetchall()
+
+            all_ev = []
+            for seq, po, pi, mn in subs_data:
+                all_ev.append((seq, 'sub', vs, po, pi, 0, mn))
+            for seq, tm, pts, mn in scoring_data:
+                all_ev.append((seq, 'score', tm, '', '', pts, mn or 0))
+            all_ev.sort(key=lambda x: x[0])
+
+            lm = 0
+            for seq, typ, tm, po, pi, pts, mn in all_ev:
+                lk = frozenset(oc)
+                if typ == 'sub':
+                    lu_stats[lk]['min'] += max(mn - lm, 0)
+                    lu_stats[lk]['games'].add(mid)
+                    lm = mn
+                    oc.discard(po)
+                    oc.add(pi)
+                elif typ == 'score':
+                    if tm == vs:
+                        lu_stats[lk]['pf'] += pts
+                    else:
+                        lu_stats[lk]['pa'] += pts
+
+            lk = frozenset(oc)
+            lu_stats[lk]['min'] += max(40 - lm, 0)
+            lu_stats[lk]['games'].add(mid)
+
+        # Sort by net rating, min 10 minutes
+        valid_lu = [(k, v) for k, v in lu_stats.items() if v['min'] >= 10]
+        sorted_lu = sorted(valid_lu, key=lambda x: (x[1]['pf'] - x[1]['pa']) / max(x[1]['min'], 1), reverse=True)
+
+        for lineup, stats in sorted_lu:
+            names = sorted(lineup)
+            net = stats['pf'] - stats['pa']
+            nrtg = net / max(stats['min'], 1) * 40
+            gp = len(stats['games'])
+            lineup_data.append((names, stats['min'], gp, stats['pf'], stats['pa'], net, nrtg))
+
+        pbp_conn3.close()
+    except Exception as e:
+        print(f"  Lineup calc error: {e}")
+
+    # Draw lineup table — force new page to ensure enough room, disable auto page break
+    pdf.add_page()
+    pdf.set_auto_page_break(auto=False)
+    lu_col_w = [75, 12, 10, 14, 14, 14, 20]
+    lu_headers = ["Lineup", "MIN", "GP", "PTS+", "PTS-", "NET", "NRTG/40"]
+    hx = pdf.l_margin
+    hy = pdf.get_y()
+
+    pdf.set_fill_color(50, 50, 50)
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_font("Arial", "B", 6)
+    for w, h in zip(lu_col_w, lu_headers):
+        pdf.set_xy(hx, hy)
+        pdf.cell(w, 4.5, h, fill=True, align="C")
+        hx += w
+    pdf.ln(4.5)
+
+    def draw_lineup_row(names, mins, gp, pf, pa, net, nrtg, rank_label=""):
+        ry = pdf.get_y()
+        row_h = 5
+        hx = pdf.l_margin
+
+        # Color bg based on nrtg
+        if nrtg > 5:
+            pdf.set_fill_color(230, 248, 235)  # green
+        elif nrtg < -5:
+            pdf.set_fill_color(252, 232, 228)  # red
+        else:
+            pdf.set_fill_color(248, 248, 252)
+        pdf.rect(hx, ry, sum(lu_col_w), row_h, "F")
+
+        # Lineup names
+        pdf.set_xy(hx, ry)
+        pdf.set_font("Arial", "", 5.5)
+        pdf.set_text_color(30, 30, 30)
+        short_names = ", ".join(n.split()[0] for n in names)
+        pdf.cell(lu_col_w[0], row_h, short_names, align="L")
+        hx += lu_col_w[0]
+
+        # Stats
+        vals = [f"{mins:.0f}", str(gp), str(pf), str(pa), f"{net:+d}", f"{nrtg:+.1f}"]
+        for i, (w, v) in enumerate(zip(lu_col_w[1:], vals)):
+            pdf.set_xy(hx, ry)
+            pdf.set_font("Arial", "B" if i == 5 else "", 5.5)
+            # Color the NRTG value
+            if i == 5:
+                pdf.set_text_color(0, 140, 60) if nrtg > 0 else pdf.set_text_color(200, 50, 30)
+            else:
+                pdf.set_text_color(50, 50, 50)
+            pdf.cell(w, row_h, v, align="C")
+            hx += w
+
+        pdf.set_y(ry + row_h)
+
+    # Top 5
+    pdf.set_font("Arial", "B", 6)
+    pdf.set_text_color(0, 140, 60)
+    pdf.cell(30, 4, "BEST")
+    pdf.ln(4)
+
+    for names, mins, gp, pf, pa, net, nrtg in lineup_data[:5]:
+        draw_lineup_row(names, mins, gp, pf, pa, net, nrtg)
+
+    pdf.ln(1)
+
+    # Separator
+    pdf.set_draw_color(200, 200, 200)
+    pdf.line(pdf.l_margin, pdf.get_y(), pdf.l_margin + sum(lu_col_w), pdf.get_y())
+    pdf.ln(1)
+
+    # Bottom 5
+    pdf.set_font("Arial", "B", 6)
+    pdf.set_text_color(200, 50, 30)
+    pdf.cell(30, 4, "WORST")
+    pdf.ln(4)
+
+    for names, mins, gp, pf, pa, net, nrtg in lineup_data[-5:]:
+        draw_lineup_row(names, mins, gp, pf, pa, net, nrtg)
+
+    pdf.ln(2)
+    pdf.set_font("Arial", "I", 6)
+    pdf.set_text_color(140, 140, 140)
+    proj_nrtg = [nrtg for names, mins, gp, pf, pa, net, nrtg in lineup_data
+                 if set(n.split()[0] for n in names) == {'Takács', 'Fekete', 'Farkas', 'Olasz', 'Bérces'}]
+    if proj_nrtg:
+        pdf.cell(0, 3, f"Note: Projected starting 5 has {proj_nrtg[0]:+.1f} NRTG/40 in {len(lineup_data)} tracked lineups (min 10 min). Season-wide data.", align="L")
+    else:
+        pdf.cell(0, 3, f"NRTG/40 = net points per 40 minutes. {len(lineup_data)} lineups with 10+ minutes tracked.", align="L")
+
     pdf.ln(6)
+    pdf.set_auto_page_break(auto=True, margin=20)
 
     # ── 2.2 Player Cards ─────────────────────────────────────────
     pdf.subsection("2.2 Key Players")
