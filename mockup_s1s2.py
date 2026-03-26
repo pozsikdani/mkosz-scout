@@ -8,6 +8,7 @@ from bs4 import BeautifulSoup
 from fpdf import FPDF
 
 DB = "/Users/danipozsik/Desktop/claudecode/mkosz-stats/mkosz_stats.sqlite"
+PBP_DB = "/Users/danipozsik/Desktop/claudecode/mkosz-play-by-play/pbp.sqlite"
 FONT_DIR = "/System/Library/Fonts/Supplemental/"
 TEAM = "%Vasas%"
 COMP = "hun2a"
@@ -386,8 +387,15 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
         # ── Scan-line zone fill (same approach as section 1.4) ──
         pdf.set_auto_page_break(auto=False)
         strip_h = 0.3
-        for yi in range(int(zc_h / strip_h)):
+        for yi in range(int(zc_h / strip_h) + 1):
             y_pos = zc_y + yi * strip_h
+            # Clip to court boundaries
+            if y_pos < zc_y or y_pos >= zc_y + zc_h:
+                continue
+            # Ensure strip doesn't exceed court bottom
+            actual_strip_h = min(strip_h, zc_y + zc_h - y_pos)
+            if actual_strip_h <= 0:
+                continue
             dy = y_pos - arc_cy
 
             # Arc boundaries
@@ -409,20 +417,22 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
             in_corner = (y_pos < zc_y + corner_h)
             inside_arc = (dy >= 0 and dy < three_r and three_r ** 2 - dy ** 2 > 0)
 
+            sh = actual_strip_h  # alias for readability
+
             # Outside arc (3PT zones)
             if arc_left > zc_x:
                 key = "corner3_left" if in_corner else "wing3_left"
                 m, t, p = _sz_pct(key)
                 r, g, b = _zone_color(p, 33)
                 pdf.set_fill_color(r, g, b)
-                pdf.rect(zc_x, y_pos, arc_left - zc_x, strip_h, "F")
+                pdf.rect(zc_x, y_pos, arc_left - zc_x, sh, "F")
 
             if arc_right < zc_x + zc_w:
                 key = "corner3_right" if in_corner else "wing3_right"
                 m, t, p = _sz_pct(key)
                 r, g, b = _zone_color(p, 33)
                 pdf.set_fill_color(r, g, b)
-                pdf.rect(arc_right, y_pos, zc_x + zc_w - arc_right, strip_h, "F")
+                pdf.rect(arc_right, y_pos, zc_x + zc_w - arc_right, sh, "F")
 
             if not inside_arc and y_pos >= arc_cy:
                 m, t, p = _sz_pct("top3")
@@ -431,17 +441,17 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
                 fill_l = max(dl_x, zc_x)
                 fill_r = min(dr_x, zc_x + zc_w)
                 if fill_r > fill_l:
-                    pdf.rect(fill_l, y_pos, fill_r - fill_l, strip_h, "F")
+                    pdf.rect(fill_l, y_pos, fill_r - fill_l, sh, "F")
                 if dl_x > zc_x:
                     m2, t2, p2 = _sz_pct("wing3_left")
                     r2, g2, b2 = _zone_color(p2, 33)
                     pdf.set_fill_color(r2, g2, b2)
-                    pdf.rect(zc_x, y_pos, dl_x - zc_x, strip_h, "F")
+                    pdf.rect(zc_x, y_pos, dl_x - zc_x, sh, "F")
                 if dr_x < zc_x + zc_w:
                     m2, t2, p2 = _sz_pct("wing3_right")
                     r2, g2, b2 = _zone_color(p2, 33)
                     pdf.set_fill_color(r2, g2, b2)
-                    pdf.rect(dr_x, y_pos, zc_x + zc_w - dr_x, strip_h, "F")
+                    pdf.rect(dr_x, y_pos, zc_x + zc_w - dr_x, sh, "F")
 
             # Inside arc (paint + mid-range)
             if inside_arc:
@@ -453,37 +463,37 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
                         m, t, p = _sz_pct("mid_left")
                         r, g, b = _zone_color(p, 35)
                         pdf.set_fill_color(r, g, b)
-                        pdf.rect(il, y_pos, zp_x - il, strip_h, "F")
+                        pdf.rect(il, y_pos, zp_x - il, sh, "F")
                     px_l = max(il, zp_x)
                     px_r = min(ir, zp_x + zp_w)
                     if px_r > px_l:
                         m, t, p = _sz_pct("paint")
                         r, g, b = _zone_color(p, 45)
                         pdf.set_fill_color(r, g, b)
-                        pdf.rect(px_l, y_pos, px_r - px_l, strip_h, "F")
+                        pdf.rect(px_l, y_pos, px_r - px_l, sh, "F")
                     if ir > zp_x + zp_w:
                         m, t, p = _sz_pct("mid_right")
                         r, g, b = _zone_color(p, 35)
                         pdf.set_fill_color(r, g, b)
-                        pdf.rect(zp_x + zp_w, y_pos, ir - (zp_x + zp_w), strip_h, "F")
+                        pdf.rect(zp_x + zp_w, y_pos, ir - (zp_x + zp_w), sh, "F")
                 else:
                     if il < dl_x:
                         m, t, p = _sz_pct("mid_left")
                         r, g, b = _zone_color(p, 35)
                         pdf.set_fill_color(r, g, b)
-                        pdf.rect(il, y_pos, min(dl_x, ir) - il, strip_h, "F")
+                        pdf.rect(il, y_pos, min(dl_x, ir) - il, sh, "F")
                     cl = max(il, dl_x)
                     cr = min(ir, dr_x)
                     if cr > cl:
                         m, t, p = _sz_pct("mid_center")
                         r, g, b = _zone_color(p, 35)
                         pdf.set_fill_color(r, g, b)
-                        pdf.rect(cl, y_pos, cr - cl, strip_h, "F")
+                        pdf.rect(cl, y_pos, cr - cl, sh, "F")
                     if ir > dr_x:
                         m, t, p = _sz_pct("mid_right")
                         r, g, b = _zone_color(p, 35)
                         pdf.set_fill_color(r, g, b)
-                        pdf.rect(max(dr_x, il), y_pos, ir - max(dr_x, il), strip_h, "F")
+                        pdf.rect(max(dr_x, il), y_pos, ir - max(dr_x, il), sh, "F")
 
         # ── Court lines (white on colored zones) ──
         pdf.set_draw_color(255, 255, 255)
@@ -1245,6 +1255,32 @@ def main():
             pzd[zone_key]["total"] += 1
             if s["is_made"]:
                 pzd[zone_key]["made"] += 1
+        # Enrich FT data from PBP events (shotchart API has unreliable FT data)
+        try:
+            pbp_ft = sqlite3.connect(PBP_DB)
+            ft_cur = pbp_ft.cursor()
+            ft_cur.execute("""
+                SELECT e.player_name,
+                       SUM(CASE WHEN e.event_type='FT_MADE' THEN 1 ELSE 0 END) as ft_made,
+                       SUM(CASE WHEN e.event_type IN ('FT_MADE','FT_MISS') THEN 1 ELSE 0 END) as ft_total
+                FROM events e
+                JOIN matches m ON e.match_id = m.match_id
+                WHERE m.comp_code = ?
+                  AND ((m.team_a LIKE ? AND e.team='A') OR (m.team_b LIKE ? AND e.team='B'))
+                  AND e.event_type IN ('FT_MADE', 'FT_MISS')
+                GROUP BY e.player_name
+            """, (COMP, TEAM, TEAM))
+            for row in ft_cur.fetchall():
+                pname, ft_m, ft_t = row
+                if pname and ft_t > 0:
+                    if pname not in player_subzones:
+                        player_subzones[pname] = {}
+                    player_subzones[pname]["ft"] = {"made": ft_m, "total": ft_t}
+            pbp_ft.close()
+            print(f"  Enriched FT data from PBP events")
+        except Exception as e:
+            print(f"  FT enrichment error: {e}")
+
         print(f"  Built per-player zone data for {len(player_subzones)} players")
 
         def sz_pct(key):
@@ -1583,7 +1619,6 @@ def main():
         print("  Using fallback roster data")
 
     # Determine projected starters from last 8 games
-    PBP_DB = "/Users/danipozsik/Desktop/claudecode/mkosz-play-by-play/pbp.sqlite"
     starter_freq = {}  # name -> starts_in_last_8
     team_exact = None  # exact team name from DB
     try:
