@@ -387,16 +387,20 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
         def light(c, factor=0.35):
             return tuple(int(c[i] + (255 - c[i]) * (1 - factor)) for i in range(3))
 
+        # ── Court proportions (realistic basketball court ratios) ──
+        # Real half-court: key is 5.8m wide on 15m court = ~39% width
+        # Key length = 5.8m on ~14m half = ~41% depth
+        # 3pt arc radius ≈ 6.75m, court half-width = 7.5m → rx ≈ 90% of half-width
+
         # 1. 3PT zone (entire court background)
         pdf.set_fill_color(*light(three_col))
         pdf.rect(court_x, court_y, court_w, court_h, "F")
 
-        # 2. Mid-range zone (inside 3pt arc — approximate with ellipse scan)
-        # Draw arc-bounded area using horizontal strips
-        arc_cx = court_x + court_w / 2  # basket x
+        # 2. Mid-range zone (inside 3pt arc)
+        arc_cx = court_x + court_w / 2
         arc_cy = court_y  # baseline
-        arc_rx = court_w * 0.42  # horizontal radius
-        arc_ry = court_h * 0.82  # vertical radius (extends most of court)
+        arc_rx = court_w * 0.45  # 3pt arc horizontal radius
+        arc_ry = court_h * 0.85  # 3pt arc vertical extent
 
         mid_light = light(mid_col)
         for row_i in range(int(court_h * 10)):
@@ -404,7 +408,6 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
             dy = y - arc_cy
             if dy < 0: continue
             if dy > arc_ry: break
-            # x range at this y
             dx = arc_rx * math.sqrt(1 - (dy / arc_ry) ** 2)
             x_left = max(arc_cx - dx, court_x)
             x_right = min(arc_cx + dx, court_x + court_w)
@@ -412,9 +415,9 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
                 pdf.set_fill_color(*mid_light)
                 pdf.rect(x_left, y, x_right - x_left, 0.15, "F")
 
-        # 3. Paint zone (rectangle near basket)
-        paint_w = court_w * 0.35
-        paint_h = court_h * 0.35
+        # 3. Paint/key zone (realistic proportions)
+        paint_w = court_w * 0.40  # key width ~40% of court
+        paint_h = court_h * 0.42  # key depth ~42% of half
         paint_x = court_x + (court_w - paint_w) / 2
         paint_y = court_y
         pdf.set_fill_color(*light(close_col))
@@ -425,51 +428,94 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
         pdf.set_line_width(0.2)
         # Court outline
         pdf.rect(court_x, court_y, court_w, court_h)
-        # Paint rectangle
+        # Paint/key rectangle
         pdf.rect(paint_x, paint_y, paint_w, paint_h)
+
+        # Free throw circle (semi-circle at bottom of key)
+        ft_circle_cx = court_x + court_w / 2
+        ft_circle_cy = paint_y + paint_h
+        ft_circle_r = paint_w / 2
+        pdf.set_line_width(0.15)
+        steps = 20
+        for i in range(steps):
+            a1 = math.pi * 0.0 + math.pi * i / steps
+            a2 = math.pi * 0.0 + math.pi * (i + 1) / steps
+            x1 = ft_circle_cx + ft_circle_r * math.cos(a1)
+            y1 = ft_circle_cy + ft_circle_r * math.sin(a1)
+            x2 = ft_circle_cx + ft_circle_r * math.cos(a2)
+            y2 = ft_circle_cy + ft_circle_r * math.sin(a2)
+            pdf.line(x1, y1, x2, y2)
+
+        # Restricted area (small semi-circle near basket)
+        ra_r = court_w * 0.08
+        ra_cy = court_y + 1.8
+        for i in range(steps):
+            a1 = math.pi * i / steps
+            a2 = math.pi * (i + 1) / steps
+            x1 = arc_cx + ra_r * math.cos(a1)
+            y1 = ra_cy + ra_r * math.sin(a1)
+            x2 = arc_cx + ra_r * math.cos(a2)
+            y2 = ra_cy + ra_r * math.sin(a2)
+            pdf.line(x1, y1, x2, y2)
+
         # Basket (small circle at top center)
         bask_x = court_x + court_w / 2
-        bask_y = court_y + 1.5
-        pdf.set_fill_color(80, 80, 80)
-        pdf.ellipse(bask_x - 0.8, bask_y - 0.8, 1.6, 1.6, "F")
+        bask_y = court_y + 1.2
+        pdf.set_fill_color(180, 30, 30)
+        pdf.ellipse(bask_x - 0.7, bask_y - 0.7, 1.4, 1.4, "F")
+
+        # Backboard (short line)
+        bb_w = court_w * 0.12
+        pdf.set_draw_color(80, 80, 80)
+        pdf.set_line_width(0.3)
+        pdf.line(bask_x - bb_w / 2, court_y + 0.3, bask_x + bb_w / 2, court_y + 0.3)
 
         # 3pt arc
         pdf.set_draw_color(80, 80, 80)
-        pdf.set_line_width(0.15)
-        steps = 40
-        for i in range(steps):
-            a1 = math.pi * 0.05 + (math.pi * 0.9) * i / steps
-            a2 = math.pi * 0.05 + (math.pi * 0.9) * (i + 1) / steps
+        pdf.set_line_width(0.2)
+        arc_steps = 50
+        for i in range(arc_steps):
+            a1 = math.pi * 0.03 + (math.pi * 0.94) * i / arc_steps
+            a2 = math.pi * 0.03 + (math.pi * 0.94) * (i + 1) / arc_steps
             x1 = arc_cx + arc_rx * math.cos(a1)
             y1 = arc_cy + arc_ry * math.sin(a1)
             x2 = arc_cx + arc_rx * math.cos(a2)
             y2 = arc_cy + arc_ry * math.sin(a2)
             if court_y <= y1 <= court_y + court_h and court_y <= y2 <= court_y + court_h:
                 pdf.line(x1, y1, x2, y2)
+        # Corner 3 vertical lines (connect arc to baseline)
+        corner_x_left = arc_cx - arc_rx
+        corner_x_right = arc_cx + arc_rx
+        corner_h = court_h * 0.08  # short vertical lines at corners
+        if corner_x_left >= court_x:
+            pdf.line(corner_x_left, court_y, corner_x_left, court_y + corner_h)
+        if corner_x_right <= court_x + court_w:
+            pdf.line(corner_x_right, court_y, corner_x_right, court_y + corner_h)
 
         # 5. Zone labels with stats overlaid on court
         def _zone_label(zx, zy, made, att, zpct, color):
-            pdf.set_font("Arial", "B", 5.5)
+            pdf.set_font("Arial", "B", 5)
             pdf.set_text_color(*color)
             txt = f"{made}/{att}" if att > 0 else "-"
             tw = pdf.get_string_width(txt)
             pdf.set_xy(zx - tw / 2, zy)
-            pdf.cell(tw, 3, txt)
+            pdf.cell(tw, 2.5, txt)
             if att > 0:
                 pct_txt = f"{zpct}%"
                 pw = pdf.get_string_width(pct_txt)
                 pdf.set_xy(zx - pw / 2, zy + 2.5)
-                pdf.set_font("Arial", "", 5)
+                pdf.set_font("Arial", "B", 5)
                 pdf.cell(pw, 2.5, pct_txt)
 
         # CLOSE label (center of paint)
-        _zone_label(paint_x + paint_w / 2, paint_y + paint_h * 0.35,
+        _zone_label(paint_x + paint_w / 2, paint_y + paint_h * 0.25,
                      cm, ca, close_pct, close_col)
-        # MID label (between paint and arc)
-        _zone_label(court_x + court_w / 2, paint_y + paint_h + (court_h * 0.45 - paint_h) / 2,
+        # MID label (between paint bottom and arc)
+        mid_label_y = paint_y + paint_h + 1.5
+        _zone_label(court_x + court_w / 2, mid_label_y,
                      mm, ma, mid_pct, mid_col)
-        # 3PT label (bottom of court, beyond arc)
-        _zone_label(court_x + court_w / 2, court_y + court_h * 0.75,
+        # 3PT label (beyond the arc — bottom area of court)
+        _zone_label(court_x + court_w / 2, court_y + court_h * 0.82,
                      tm, ta, three_pct, three_col)
 
         # FT below the court as a small bar
