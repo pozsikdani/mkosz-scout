@@ -104,15 +104,17 @@ def opp_name(m, s):
     return m["team_b_name"] if s == "A" else m["team_a_name"]
 
 
-def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_path=None, height=None, pos=None, strengths=None):
-    """Render a player card with optional photo and strength tags.
-    strengths: list of (label, color_tuple) e.g. [("3PT", (39,174,96)), ("AST", (41,128,185))]
+def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_path=None, height=None, pos=None, strengths=None, shot_dist=None):
+    """Render a player card with optional photo, strength tags, and shot distribution.
+    strengths: list of (label, color_tuple)
+    shot_dist: dict with keys 'close_m','close_a','mid_m','mid_a','three_m','three_a','ft_m','ft_a'
     """
     x0 = pdf.l_margin
     w = pdf.w - pdf.l_margin - pdf.r_margin
     y_start = pdf.get_y()
 
-    card_h = 42 if strengths else 40
+    has_extras = strengths or shot_dist
+    card_h = 48 if (strengths and shot_dist) else (42 if has_extras else 40)
     if y_start + card_h > pdf.h - 20:
         pdf.add_page()
         y_start = pdf.get_y()
@@ -231,9 +233,71 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
     pdf.set_text_color(90, 90, 90)
     pdf.multi_cell(cw, 3.5, note)
 
+    # Shot distribution bar + strength tags row
+    extra_y = y_start + card_h - (12 if (strengths and shot_dist) else 6)
+
+    # Shot distribution stacked bar
+    if shot_dist:
+        bar_y = extra_y
+        bar_h = 4
+        bar_w_total = cw * 0.95
+
+        cm = shot_dist.get('close_m', 0)
+        ca = shot_dist.get('close_a', 0)
+        mm = shot_dist.get('mid_m', 0)
+        ma = shot_dist.get('mid_a', 0)
+        tm = shot_dist.get('three_m', 0)
+        ta = shot_dist.get('three_a', 0)
+        fm = shot_dist.get('ft_m', 0)
+        fa = shot_dist.get('ft_a', 0)
+
+        total_att = ca + ma + ta + fa
+        if total_att > 0:
+            # Zone colors
+            c_close = (41, 128, 185)    # blue
+            c_mid = (243, 156, 18)      # orange
+            c_three = (39, 174, 96)     # green
+            c_ft = (142, 68, 173)       # purple
+
+            zones = [
+                ("CLOSE", ca, cm, c_close),
+                ("MID", ma, mm, c_mid),
+                ("3PT", ta, tm, c_three),
+                ("FT", fa, fm, c_ft),
+            ]
+
+            # Draw stacked bar
+            bx = cx
+            for zlabel, att, made, color in zones:
+                if att == 0:
+                    continue
+                seg_w = (att / total_att) * bar_w_total
+                # Background (attempts = lighter)
+                pdf.set_fill_color(min(color[0]+80, 240), min(color[1]+80, 240), min(color[2]+80, 240))
+                pdf.rect(bx, bar_y, seg_w, bar_h, "F")
+                # Foreground (made = darker, proportional)
+                if made > 0:
+                    made_w = (made / att) * seg_w
+                    pdf.set_fill_color(*color)
+                    pdf.rect(bx, bar_y, made_w, bar_h, "F")
+
+                # Label inside bar
+                pct = round(made * 100.0 / att) if att > 0 else 0
+                lbl = f"{zlabel} {made}/{att}"
+                pdf.set_font("Arial", "B", 4.5)
+                lbl_w = pdf.get_string_width(lbl)
+                if seg_w > lbl_w + 2:
+                    pdf.set_text_color(255, 255, 255)
+                    pdf.set_xy(bx + 1, bar_y + 0.5)
+                    pdf.cell(seg_w - 2, 3, lbl, align="C")
+
+                bx += seg_w
+
+            extra_y = bar_y + bar_h + 1.5
+
     # Strength tags (colored pills)
     if strengths:
-        tag_y = y_start + card_h - 6
+        tag_y = extra_y
         tag_x = cx
         for label, color in strengths:
             tw = pdf.get_string_width(label) + 4
@@ -2069,6 +2133,23 @@ def main():
         "Makkos Dávid":          [("STEALS", C_STL), ("PLAYMAKER", C_AST), ("OREB", C_OREB)],
     }
 
+    # Shot distribution data per player (from PBP events, full season)
+    # Keys: close_m, close_a, mid_m, mid_a, three_m, three_a, ft_m, ft_a
+    player_shot_dist = {
+        "Takács Dániel":         {"close_m": 17, "close_a": 38, "mid_m": 11, "mid_a": 28, "three_m": 26, "three_a": 88, "ft_m": 29, "ft_a": 37},
+        "Fekete Viktor Norbert": {"close_m": 58, "close_a": 111, "mid_m": 5, "mid_a": 20, "three_m": 34, "three_a": 126, "ft_m": 70, "ft_a": 90},
+        "Farkas Attila":         {"close_m": 36, "close_a": 63, "mid_m": 8, "mid_a": 16, "three_m": 40, "three_a": 112, "ft_m": 17, "ft_a": 21},
+        "Bérces Dániel":         {"close_m": 32, "close_a": 51, "mid_m": 5, "mid_a": 14, "three_m": 24, "three_a": 82, "ft_m": 20, "ft_a": 32},
+        "Olasz Ádám Zsolt":      {"close_m": 103, "close_a": 167, "mid_m": 4, "mid_a": 17, "three_m": 2, "three_a": 5, "ft_m": 52, "ft_a": 74},
+        "Andrássy Géza":         {"close_m": 65, "close_a": 111, "mid_m": 2, "mid_a": 14, "three_m": 2, "three_a": 26, "ft_m": 43, "ft_a": 60},
+        "Halasy Örs":            {"close_m": 8, "close_a": 16, "mid_m": 1, "mid_a": 5, "three_m": 3, "three_a": 12, "ft_m": 5, "ft_a": 8},
+        "Pleesz Ádám":           {"close_m": 53, "close_a": 81, "mid_m": 2, "mid_a": 9, "three_m": 3, "three_a": 15, "ft_m": 22, "ft_a": 30},
+        "Krasovec Ádám":         {"close_m": 26, "close_a": 41, "mid_m": 7, "mid_a": 20, "three_m": 17, "three_a": 56, "ft_m": 14, "ft_a": 19},
+        "Zöldi Péter András":    {"close_m": 10, "close_a": 25, "mid_m": 3, "mid_a": 12, "three_m": 12, "three_a": 33, "ft_m": 12, "ft_a": 20},
+        "Karosi Gergely":        {"close_m": 5, "close_a": 12, "mid_m": 2, "mid_a": 6, "three_m": 5, "three_a": 18, "ft_m": 4, "ft_a": 6},
+        "Makkos Dávid":          {"close_m": 30, "close_a": 48, "mid_m": 1, "mid_a": 6, "three_m": 2, "three_a": 17, "ft_m": 10, "ft_a": 25},
+    }
+
     # Starters sorted by position: PG → W → W → F → C
     starters = [
         ("#11", "Takács Dániel", "Floor General / Point Guard",
@@ -2121,7 +2202,8 @@ def main():
         player_card(pdf, name, jersey, role, stats, note, is_starter=True,
                     photo_path=player_photo_paths.get(name),
                     height=r.get("height"), pos=r.get("pos"),
-                    strengths=player_strengths.get(name))
+                    strengths=player_strengths.get(name),
+                    shot_dist=player_shot_dist.get(name))
 
     # ROTATION — key bench players who get regular minutes (5+ GP in last 8)
     pdf.ln(2)
@@ -2158,7 +2240,8 @@ def main():
         player_card(pdf, name, jersey, role, stats, note, is_starter=False,
                     photo_path=player_photo_paths.get(name),
                     height=r.get("height"), pos=r.get("pos"),
-                    strengths=player_strengths.get(name))
+                    strengths=player_strengths.get(name),
+                    shot_dist=player_shot_dist.get(name))
 
     # BENCH — situational / fringe players
     pdf.ln(2)
@@ -2190,7 +2273,8 @@ def main():
         player_card(pdf, name, jersey, role, stats, note, is_starter=False,
                     photo_path=player_photo_paths.get(name),
                     height=r.get("height"), pos=r.get("pos"),
-                    strengths=player_strengths.get(name))
+                    strengths=player_strengths.get(name),
+                    shot_dist=player_shot_dist.get(name))
 
     pdf.output("mockup_s1s2.pdf")
     print("Mockup saved to mockup_s1s2.pdf")
