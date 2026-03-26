@@ -1855,16 +1855,20 @@ def main():
             lu_stats[lk]['min'] += max(40 - lm, 0)
             lu_stats[lk]['games'].add(mid)
 
-        # Sort by net rating, min 10 minutes
+        # Sort by minutes played (most used lineups first), min 10 minutes
         valid_lu = [(k, v) for k, v in lu_stats.items() if v['min'] >= 10]
-        sorted_lu = sorted(valid_lu, key=lambda x: (x[1]['pf'] - x[1]['pa']) / max(x[1]['min'], 1), reverse=True)
+        sorted_lu = sorted(valid_lu, key=lambda x: -x[1]['min'])
+
+        # Identify projected starting 5 names
+        proj5_set = set(name for _, name, *_ in projected_five)
 
         for lineup, stats in sorted_lu:
             names = sorted(lineup)
             net = stats['pf'] - stats['pa']
             nrtg = net / max(stats['min'], 1) * 40
             gp = len(stats['games'])
-            lineup_data.append((names, stats['min'], gp, stats['pf'], stats['pa'], net, nrtg))
+            is_starter_lineup = (lineup == frozenset(proj5_set))
+            lineup_data.append((names, stats['min'], gp, stats['pf'], stats['pa'], net, nrtg, is_starter_lineup))
 
         pbp_conn3.close()
     except Exception as e:
@@ -1887,13 +1891,15 @@ def main():
         hx += w
     pdf.ln(4.5)
 
-    def draw_lineup_row(names, mins, gp, pf, pa, net, nrtg, rank_label=""):
+    def draw_lineup_row(names, mins, gp, pf, pa, net, nrtg, is_starter=False):
         ry = pdf.get_y()
-        row_h = 5
+        row_h = 5.5
         hx = pdf.l_margin
 
         # Color bg based on nrtg
-        if nrtg > 5:
+        if is_starter:
+            pdf.set_fill_color(255, 248, 230)  # gold/amber for starter lineup
+        elif nrtg > 5:
             pdf.set_fill_color(230, 248, 235)  # green
         elif nrtg < -5:
             pdf.set_fill_color(252, 232, 228)  # red
@@ -1901,12 +1907,19 @@ def main():
             pdf.set_fill_color(248, 248, 252)
         pdf.rect(hx, ry, sum(lu_col_w), row_h, "F")
 
+        # Starter marker (left edge)
+        if is_starter:
+            pdf.set_fill_color(200, 160, 30)
+            pdf.rect(hx, ry, 1.5, row_h, "F")
+
         # Lineup names
-        pdf.set_xy(hx, ry)
-        pdf.set_font("Arial", "", 5.5)
+        pdf.set_xy(hx + (2 if is_starter else 0), ry)
+        pdf.set_font("Arial", "B" if is_starter else "", 5.5)
         pdf.set_text_color(30, 30, 30)
         short_names = ", ".join(n.split()[0] for n in names)
-        pdf.cell(lu_col_w[0], row_h, short_names, align="L")
+        if is_starter:
+            short_names = "[S5] " + short_names
+        pdf.cell(lu_col_w[0] - (2 if is_starter else 0), row_h, short_names, align="L")
         hx += lu_col_w[0]
 
         # Stats
@@ -1914,7 +1927,6 @@ def main():
         for i, (w, v) in enumerate(zip(lu_col_w[1:], vals)):
             pdf.set_xy(hx, ry)
             pdf.set_font("Arial", "B" if i == 5 else "", 5.5)
-            # Color the NRTG value
             if i == 5:
                 pdf.set_text_color(0, 140, 60) if nrtg > 0 else pdf.set_text_color(200, 50, 30)
             else:
@@ -1924,40 +1936,14 @@ def main():
 
         pdf.set_y(ry + row_h)
 
-    # Top 5
-    pdf.set_font("Arial", "B", 6)
-    pdf.set_text_color(0, 140, 60)
-    pdf.cell(30, 4, "BEST")
-    pdf.ln(4)
-
-    for names, mins, gp, pf, pa, net, nrtg in lineup_data[:5]:
-        draw_lineup_row(names, mins, gp, pf, pa, net, nrtg)
-
-    pdf.ln(1)
-
-    # Separator
-    pdf.set_draw_color(200, 200, 200)
-    pdf.line(pdf.l_margin, pdf.get_y(), pdf.l_margin + sum(lu_col_w), pdf.get_y())
-    pdf.ln(1)
-
-    # Bottom 5
-    pdf.set_font("Arial", "B", 6)
-    pdf.set_text_color(200, 50, 30)
-    pdf.cell(30, 4, "WORST")
-    pdf.ln(4)
-
-    for names, mins, gp, pf, pa, net, nrtg in lineup_data[-5:]:
-        draw_lineup_row(names, mins, gp, pf, pa, net, nrtg)
+    # Show top 10 lineups by minutes (sorted by most used), max 10 rows
+    for names, mins, gp, pf, pa, net, nrtg, is_starter in lineup_data[:10]:
+        draw_lineup_row(names, mins, gp, pf, pa, net, nrtg, is_starter)
 
     pdf.ln(2)
     pdf.set_font("Arial", "I", 6)
     pdf.set_text_color(140, 140, 140)
-    proj_nrtg = [nrtg for names, mins, gp, pf, pa, net, nrtg in lineup_data
-                 if set(n.split()[0] for n in names) == {'Takács', 'Fekete', 'Farkas', 'Olasz', 'Bérces'}]
-    if proj_nrtg:
-        pdf.cell(0, 3, f"Note: Projected starting 5 has {proj_nrtg[0]:+.1f} NRTG/40 in {len(lineup_data)} tracked lineups (min 10 min). Season-wide data.", align="L")
-    else:
-        pdf.cell(0, 3, f"NRTG/40 = net points per 40 minutes. {len(lineup_data)} lineups with 10+ minutes tracked.", align="L")
+    pdf.cell(0, 3, f"Sorted by minutes played. [S5] = projected starting five. {len(lineup_data)} lineups with 10+ min tracked. NRTG/40 = net pts per 40 min.", align="L")
 
     pdf.ln(6)
     pdf.set_auto_page_break(auto=True, margin=20)
