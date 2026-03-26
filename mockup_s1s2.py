@@ -1790,10 +1790,13 @@ def main():
         pbp_conn3 = sqlite3.connect(PBP_DB)
         pbp_cur3 = pbp_conn3.cursor()
         pbp_cur3.execute("""
-            SELECT m.match_id,
-                   CASE WHEN m.team_a=? THEN 'A' ELSE 'B' END as vs
-            FROM matches m WHERE m.comp_code=?
-              AND (m.team_a=? OR m.team_b=?)
+            SELECT match_id, vs FROM (
+                SELECT m.match_id,
+                       CASE WHEN m.team_a=? THEN 'A' ELSE 'B' END as vs,
+                       ROW_NUMBER() OVER (ORDER BY m.match_date DESC) as rn
+                FROM matches m WHERE m.comp_code=?
+                  AND (m.team_a=? OR m.team_b=?)
+            ) WHERE rn <= 8
         """, (team_exact, COMP, team_exact, team_exact))
         lu_matches = pbp_cur3.fetchall()
 
@@ -1856,7 +1859,7 @@ def main():
             lu_stats[lk]['games'].add(mid)
 
         # Sort by minutes played (most used lineups first), min 10 minutes
-        valid_lu = [(k, v) for k, v in lu_stats.items() if v['min'] >= 10]
+        valid_lu = [(k, v) for k, v in lu_stats.items() if v['min'] >= 5]
         sorted_lu = sorted(valid_lu, key=lambda x: -x[1]['min'])
 
         # Identify projected starting 5 names
@@ -1951,7 +1954,7 @@ def main():
     pdf.ln(2)
     pdf.set_font("Arial", "I", 6)
     pdf.set_text_color(140, 140, 140)
-    pdf.cell(0, 3, f"Sorted by minutes played. [S5] = projected starting five. {len(lineup_data)} lineups with 10+ min tracked. NRTG/40 = net pts per 40 min.", align="L")
+    pdf.cell(0, 3, f"Last 8 games. Sorted by minutes played. [S5] = projected starting five. {len(lineup_data)} lineups with 5+ min. NRTG/40 = net pts per 40 min.", align="L")
 
     pdf.ln(6)
     pdf.set_auto_page_break(auto=True, margin=20)
