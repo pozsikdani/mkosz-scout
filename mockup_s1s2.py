@@ -104,13 +104,13 @@ def opp_name(m, s):
     return m["team_b_name"] if s == "A" else m["team_a_name"]
 
 
-def player_card(pdf, name, jersey, role, stats, note, is_starter=True):
-    """Render a player card."""
+def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_path=None, height=None, pos=None):
+    """Render a player card with optional photo."""
     x0 = pdf.l_margin
     w = pdf.w - pdf.l_margin - pdf.r_margin
     y_start = pdf.get_y()
 
-    card_h = 36
+    card_h = 40
     if y_start + card_h > pdf.h - 20:
         pdf.add_page()
         y_start = pdf.get_y()
@@ -123,53 +123,68 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True):
     pdf.set_fill_color(180, 30, 30) if is_starter else pdf.set_fill_color(160, 160, 160)
     pdf.rect(x0, y_start, 2, card_h, "F")
 
+    # Photo (if available)
+    photo_w = 0
+    if photo_path:
+        import os
+        if os.path.exists(photo_path):
+            ph = card_h - 4  # photo height
+            pw = ph * 0.7    # aspect ratio ~0.7 for portrait
+            pdf.image(photo_path, x0 + 4, y_start + 2, pw, ph)
+            photo_w = pw + 4
+
+    # Content area starts after photo
+    cx = x0 + 4 + photo_w
+    cw = w - 6 - photo_w
+
     # Name & jersey
-    pdf.set_xy(x0 + 5, y_start + 2)
+    pdf.set_xy(cx, y_start + 2)
     pdf.set_font("Arial", "B", 11)
     pdf.set_text_color(30, 30, 30)
-    pdf.cell(0, 5, f"{jersey}  {name}")
+    pdf.cell(cw * 0.6, 5, f"{jersey}  {name}")
 
-    # Role
-    pdf.set_xy(x0 + w - 55, y_start + 2)
-    pdf.set_font("Arial", "I", 8)
+    # Role + height + pos on right
+    role_line = role
+    if height and pos:
+        role_line = f"{pos} | {height}cm | {role}"
+    elif height:
+        role_line = f"{height}cm | {role}"
+    pdf.set_xy(cx + cw * 0.6, y_start + 2)
+    pdf.set_font("Arial", "I", 7)
     pdf.set_text_color(120, 120, 120)
-    pdf.cell(50, 5, role, align="R")
+    pdf.cell(cw * 0.4, 5, role_line, align="R")
 
-    # Stats
+    # Stats row
     stat_labels = ["MPG", "PPG", "FG%", "3P%", "FT%", "RPG", "APG", "TPG", "FPG"]
     stat_vals = [stats.get(k, "-") for k in ["mpg", "ppg", "fg", "3p", "ft", "rpg", "apg", "tpg", "fpg"]]
-    col_w = (w - 10) / len(stat_labels)
-    y_s = y_start + 9
+    col_w = cw / len(stat_labels)
+    y_s = y_start + 10
 
-    pdf.set_font("Arial", "B", 6.5)
+    pdf.set_font("Arial", "B", 6)
     pdf.set_text_color(110, 110, 110)
     for i, lbl in enumerate(stat_labels):
-        pdf.set_xy(x0 + 5 + i * col_w, y_s)
+        pdf.set_xy(cx + i * col_w, y_s)
         pdf.cell(col_w, 3.5, lbl, align="C")
 
-    pdf.set_font("Arial", "B", 10)
+    pdf.set_font("Arial", "B", 9)
     for i, val in enumerate(stat_vals):
-        pdf.set_xy(x0 + 5 + i * col_w, y_s + 3.5)
-        # Red for bad values
+        pdf.set_xy(cx + i * col_w, y_s + 3.5)
         is_bad = False
         try:
             v = float(val)
-            if stat_labels[i] == "3P%" and v < 30:
-                is_bad = True
-            elif stat_labels[i] == "FT%" and v < 65:
-                is_bad = True
-            elif stat_labels[i] == "FPG" and v >= 2.5:
-                is_bad = True
+            if stat_labels[i] == "3P%" and v < 30: is_bad = True
+            elif stat_labels[i] == "FT%" and v < 65: is_bad = True
+            elif stat_labels[i] == "FPG" and v >= 2.5: is_bad = True
         except (ValueError, TypeError):
             pass
         pdf.set_text_color(200, 60, 60) if is_bad else pdf.set_text_color(30, 30, 30)
         pdf.cell(col_w, 5, str(val), align="C")
 
     # Note
-    pdf.set_xy(x0 + 5, y_s + 10)
-    pdf.set_font("Arial", "I", 7.5)
+    pdf.set_xy(cx, y_s + 10)
+    pdf.set_font("Arial", "I", 7)
     pdf.set_text_color(90, 90, 90)
-    pdf.multi_cell(w - 10, 3.5, note)
+    pdf.multi_cell(cw, 3.5, note)
 
     pdf.set_y(y_start + card_h + 2)
 
@@ -1996,8 +2011,28 @@ def main():
          "Effective inside (55% paint FG)."),
     ]
 
+    # Download photos for all player card players (reuse existing + fetch missing)
+    all_card_names = [n for _, n, *_ in starters] + ["Farkas Attila", "Makkos Dávid", "Pleesz Ádám"]
+    for pname in all_card_names:
+        if pname not in player_photo_paths:
+            pic_url = roster_map.get(pname, {}).get("pic_url", "")
+            if pic_url:
+                try:
+                    img_resp = requests.get(pic_url, timeout=5)
+                    img = Image.open(BytesIO(img_resp.content)).convert("RGBA")
+                    # Keep portrait aspect for card (don't square crop)
+                    img = img.resize((154, 220), Image.LANCZOS)
+                    tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+                    img.convert("RGB").save(tmp.name, "PNG")
+                    player_photo_paths[pname] = tmp.name
+                except Exception:
+                    pass
+
     for jersey, name, role, stats, note in starters:
-        player_card(pdf, name, jersey, role, stats, note, is_starter=True)
+        r = roster_map.get(name, {})
+        player_card(pdf, name, jersey, role, stats, note, is_starter=True,
+                    photo_path=player_photo_paths.get(name),
+                    height=r.get("height"), pos=r.get("pos"))
 
     pdf.ln(2)
     pdf.set_font("Arial", "B", 10)
@@ -2023,7 +2058,10 @@ def main():
     ]
 
     for jersey, name, role, stats, note in bench:
-        player_card(pdf, name, jersey, role, stats, note, is_starter=False)
+        r = roster_map.get(name, {})
+        player_card(pdf, name, jersey, role, stats, note, is_starter=False,
+                    photo_path=player_photo_paths.get(name),
+                    height=r.get("height"), pos=r.get("pos"))
 
     pdf.output("mockup_s1s2.pdf")
     print("Mockup saved to mockup_s1s2.pdf")
