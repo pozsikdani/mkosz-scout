@@ -104,10 +104,11 @@ def opp_name(m, s):
     return m["team_b_name"] if s == "A" else m["team_a_name"]
 
 
-def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_path=None, height=None, pos=None, strengths=None, shot_dist=None):
-    """Render a player card with optional photo, strength tags, and shot distribution.
+def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_path=None, height=None, pos=None, strengths=None, shot_dist=None, percentiles=None):
+    """Render a player card with optional photo, strength tags, shot distribution, and league percentiles.
     strengths: list of (label, color_tuple)
     shot_dist: dict with keys 'close_m','close_a','mid_m','mid_a','three_m','three_a','ft_m','ft_a'
+    percentiles: dict mapping stat key to percentile 0-100 (e.g. {'ppg': 75, 'apg': 87})
     """
     x0 = pdf.l_margin
     w = pdf.w - pdf.l_margin - pdf.r_margin
@@ -213,6 +214,9 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
         pdf.set_xy(cx + i * col_w, y_s)
         pdf.cell(col_w, 3.5, lbl, align="C")
 
+    # Stat key mapping for percentiles lookup
+    stat_pct_keys = ["mpg", "ppg", "fg", "3p", "ft", "rpg", "apg", "tpg", "fpg"]
+
     pdf.set_font("Arial", "B", 9)
     for i, val in enumerate(stat_vals):
         pdf.set_xy(cx + i * col_w, y_s + 3.5)
@@ -226,6 +230,30 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
             pass
         pdf.set_text_color(200, 60, 60) if is_bad else pdf.set_text_color(30, 30, 30)
         pdf.cell(col_w, 5, str(val), align="C")
+
+        # Percentile mini bar under each stat value
+        if percentiles and stat_pct_keys[i] in percentiles:
+            pct = percentiles[stat_pct_keys[i]]
+            bar_w = col_w * 0.75
+            bar_h = 1.5
+            bar_x = cx + i * col_w + (col_w - bar_w) / 2
+            bar_y = y_s + 8.5
+            # Background (gray track)
+            pdf.set_fill_color(220, 220, 220)
+            pdf.rect(bar_x, bar_y, bar_w, bar_h, "F")
+            # Percentile fill — color based on value
+            # For TPG and FPG, lower is better (invert color)
+            invert = stat_labels[i] in ("TPG", "FPG")
+            display_pct = 100 - pct if invert else pct
+            if display_pct >= 70:
+                pr, pg, pb = 0, 160, 60     # green
+            elif display_pct >= 40:
+                pr, pg, pb = 200, 160, 30   # yellow/amber
+            else:
+                pr, pg, pb = 200, 60, 50    # red
+            fill_w = (pct / 100.0) * bar_w
+            pdf.set_fill_color(pr, pg, pb)
+            pdf.rect(bar_x, bar_y, fill_w, bar_h, "F")
 
     # Note
     pdf.set_xy(cx, y_s + 10)
@@ -2162,6 +2190,51 @@ def main():
         "Makkos Dávid":          {"close_m": 30, "close_a": 48, "mid_m": 1, "mid_a": 6, "three_m": 2, "three_a": 17, "ft_m": 10, "ft_a": 25},
     }
 
+    # Compute league-wide percentiles from PBP data
+    player_percentiles = {}  # name -> {stat: percentile}
+    try:
+        pbp_pct = sqlite3.connect(PBP_DB)
+        pct_cur = pbp_pct.cursor()
+        pct_cur.execute("""
+            SELECT e.player_name,
+                CASE WHEN e.team='A' THEN m.team_a ELSE m.team_b END as team,
+                COUNT(DISTINCT e.match_id) as gp,
+                SUM(CASE WHEN event_type IN ('CLOSE_MADE','MID_MADE','DUNK_MADE') THEN 2
+                         WHEN event_type='THREE_MADE' THEN 3
+                         WHEN event_type='FT_MADE' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as ppg,
+                SUM(CASE WHEN event_type='AST' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as apg,
+                SUM(CASE WHEN event_type IN ('OREB','DREB') THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as rpg,
+                SUM(CASE WHEN event_type='STL' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as spg,
+                SUM(CASE WHEN event_type='BLK' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as bpg,
+                SUM(CASE WHEN event_type='TOV' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as topg,
+                SUM(CASE WHEN event_type='FOUL' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as fpg
+            FROM events e JOIN matches m ON e.match_id=m.match_id
+            WHERE m.comp_code=? AND e.player_name != ''
+            GROUP BY e.player_name HAVING gp >= 10
+        """, (COMP,))
+        all_players = pct_cur.fetchall()
+        pbp_pct.close()
+
+        # Build sorted lists for each stat
+        stat_indices = {'ppg': 3, 'apg': 4, 'rpg': 5, 'spg': 6, 'bpg': 7, 'tpg': 8, 'fpg': 9}
+        sorted_stats = {k: sorted(r[v] for r in all_players) for k, v in stat_indices.items()}
+
+        def calc_pctile(val, sorted_list):
+            return round(sum(1 for v in sorted_list if v < val) * 100.0 / max(len(sorted_list), 1))
+
+        # Compute percentiles for Vasas players
+        for row in all_players:
+            name = row[0]
+            team = row[1]
+            if team and 'Vasas' in team:
+                pcts = {}
+                for stat_key, idx in stat_indices.items():
+                    pcts[stat_key] = calc_pctile(row[idx], sorted_stats[stat_key])
+                player_percentiles[name] = pcts
+        print(f"  Computed percentiles for {len(player_percentiles)} Vasas players (league: {len(all_players)})")
+    except Exception as e:
+        print(f"  Percentile calc error: {e}")
+
     # Starters sorted by position: PG → W → W → F → C
     starters = [
         ("#11", "Takács Dániel", "Floor General / Point Guard",
@@ -2215,7 +2288,8 @@ def main():
                     photo_path=player_photo_paths.get(name),
                     height=r.get("height"), pos=r.get("pos"),
                     strengths=player_strengths.get(name),
-                    shot_dist=player_shot_dist.get(name))
+                    shot_dist=player_shot_dist.get(name),
+                    percentiles=player_percentiles.get(name))
 
     # ROTATION — key bench players who get regular minutes (5+ GP in last 8)
     pdf.ln(2)
@@ -2253,7 +2327,8 @@ def main():
                     photo_path=player_photo_paths.get(name),
                     height=r.get("height"), pos=r.get("pos"),
                     strengths=player_strengths.get(name),
-                    shot_dist=player_shot_dist.get(name))
+                    shot_dist=player_shot_dist.get(name),
+                    percentiles=player_percentiles.get(name))
 
     # BENCH — situational / fringe players
     pdf.ln(2)
@@ -2286,7 +2361,8 @@ def main():
                     photo_path=player_photo_paths.get(name),
                     height=r.get("height"), pos=r.get("pos"),
                     strengths=player_strengths.get(name),
-                    shot_dist=player_shot_dist.get(name))
+                    shot_dist=player_shot_dist.get(name),
+                    percentiles=player_percentiles.get(name))
 
     pdf.output("mockup_s1s2.pdf")
     print("Mockup saved to mockup_s1s2.pdf")
