@@ -1896,30 +1896,38 @@ def main():
         row_h = 5.5
         hx = pdf.l_margin
 
-        # Color bg based on nrtg
-        if is_starter:
-            pdf.set_fill_color(255, 248, 230)  # gold/amber for starter lineup
-        elif nrtg > 5:
-            pdf.set_fill_color(230, 248, 235)  # green
-        elif nrtg < -5:
-            pdf.set_fill_color(252, 232, 228)  # red
+        # Color bg: gradient green/red based on nrtg magnitude
+        # Positive: light green → dark green as nrtg increases
+        # Negative: light red → dark red as nrtg decreases
+        if nrtg >= 0:
+            intensity = min(abs(nrtg) / 50.0, 1.0)  # 0-50 range mapped to 0-1
+            r = int(240 - intensity * 50)   # 240 → 190
+            g = int(252 - intensity * 20)   # 252 → 232
+            b = int(240 - intensity * 40)   # 240 → 200
         else:
-            pdf.set_fill_color(248, 248, 252)
+            intensity = min(abs(nrtg) / 50.0, 1.0)
+            r = int(255 - intensity * 20)   # 255 → 235
+            g = int(240 - intensity * 50)   # 240 → 190
+            b = int(235 - intensity * 50)   # 235 → 185
+
+        pdf.set_fill_color(r, g, b)
         pdf.rect(hx, ry, sum(lu_col_w), row_h, "F")
 
-        # Starter marker (left edge)
+        # Starter marker: bold border around the row
         if is_starter:
-            pdf.set_fill_color(200, 160, 30)
-            pdf.rect(hx, ry, 1.5, row_h, "F")
+            pdf.set_draw_color(30, 30, 30)
+            pdf.set_line_width(0.6)
+            pdf.rect(hx, ry, sum(lu_col_w), row_h, "D")
+            pdf.set_line_width(0.2)
 
         # Lineup names
-        pdf.set_xy(hx + (2 if is_starter else 0), ry)
+        pdf.set_xy(hx, ry)
         pdf.set_font("Arial", "B" if is_starter else "", 5.5)
         pdf.set_text_color(30, 30, 30)
         short_names = ", ".join(n.split()[0] for n in names)
         if is_starter:
             short_names = "[S5] " + short_names
-        pdf.cell(lu_col_w[0] - (2 if is_starter else 0), row_h, short_names, align="L")
+        pdf.cell(lu_col_w[0], row_h, short_names, align="L")
         hx += lu_col_w[0]
 
         # Stats
