@@ -104,13 +104,15 @@ def opp_name(m, s):
     return m["team_b_name"] if s == "A" else m["team_a_name"]
 
 
-def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_path=None, height=None, pos=None):
-    """Render a player card with optional photo."""
+def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_path=None, height=None, pos=None, strengths=None):
+    """Render a player card with optional photo and strength tags.
+    strengths: list of (label, color_tuple) e.g. [("3PT", (39,174,96)), ("AST", (41,128,185))]
+    """
     x0 = pdf.l_margin
     w = pdf.w - pdf.l_margin - pdf.r_margin
     y_start = pdf.get_y()
 
-    card_h = 40
+    card_h = 42 if strengths else 40
     if y_start + card_h > pdf.h - 20:
         pdf.add_page()
         y_start = pdf.get_y()
@@ -228,6 +230,20 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
     pdf.set_font("Arial", "I", 7)
     pdf.set_text_color(90, 90, 90)
     pdf.multi_cell(cw, 3.5, note)
+
+    # Strength tags (colored pills)
+    if strengths:
+        tag_y = y_start + card_h - 6
+        tag_x = cx
+        for label, color in strengths:
+            tw = pdf.get_string_width(label) + 4
+            pdf.set_fill_color(*color)
+            pdf.rect(tag_x, tag_y, tw, 4, "F")
+            pdf.set_font("Arial", "B", 5.5)
+            pdf.set_text_color(255, 255, 255)
+            pdf.set_xy(tag_x, tag_y + 0.3)
+            pdf.cell(tw, 3.5, label, align="C")
+            tag_x += tw + 1.5
 
     pdf.set_y(y_start + card_h + 2)
 
@@ -2026,6 +2042,33 @@ def main():
     pdf.cell(0, 6, "STARTERS")
     pdf.ln(7)
 
+    # Strength tags per player (based on PBP analysis)
+    # Colors: green=shooting, blue=playmaking, orange=rebounding, red=defense, purple=paint
+    C_3PT = (39, 174, 96)      # green - shooter
+    C_AST = (41, 128, 185)     # blue - playmaker
+    C_OREB = (230, 126, 34)    # orange - offensive boards
+    C_DREB = (211, 84, 0)      # dark orange - defensive boards
+    C_STL = (192, 57, 43)      # red - steals
+    C_BLK = (142, 68, 173)     # purple - blocks
+    C_PAINT = (127, 140, 141)  # steel - paint scorer
+    C_FT = (52, 73, 94)        # dark - FT drawing
+    C_VOL = (44, 62, 80)       # dark blue - volume scorer
+
+    player_strengths = {
+        "Takács Dániel":         [("PLAYMAKER", C_AST), ("DREB", C_DREB), ("FT DRAW", C_FT)],
+        "Fekete Viktor Norbert": [("VOLUME", C_VOL), ("DREB", C_DREB), ("PLAYMAKER", C_AST), ("FT DRAW", C_FT)],
+        "Farkas Attila":         [("3PT SHOOTER", C_3PT), ("PLAYMAKER", C_AST)],
+        "Bérces Dániel":         [("OREB", C_OREB), ("DREB", C_DREB)],
+        "Olasz Ádám Zsolt":      [("PAINT", C_PAINT), ("OREB", C_OREB), ("DREB", C_DREB), ("FT DRAW", C_FT)],
+        "Andrássy Géza":         [("SHOT BLOCKER", C_BLK), ("OREB", C_OREB), ("DREB", C_DREB)],
+        "Halasy Örs":            [("OREB", C_OREB)],
+        "Pleesz Ádám":           [("PAINT", C_PAINT), ("OREB", C_OREB), ("DREB", C_DREB)],
+        "Krasovec Ádám":         [("3PT", C_3PT), ("DREB", C_DREB)],
+        "Zöldi Péter András":    [("3PT", C_3PT), ("PLAYMAKER", C_AST)],
+        "Karosi Gergely":        [],
+        "Makkos Dávid":          [("STEALS", C_STL), ("PLAYMAKER", C_AST), ("OREB", C_OREB)],
+    }
+
     # Starters sorted by position: PG → W → W → F → C
     starters = [
         ("#11", "Takács Dániel", "Floor General / Point Guard",
@@ -2077,7 +2120,8 @@ def main():
         r = roster_map.get(name, {})
         player_card(pdf, name, jersey, role, stats, note, is_starter=True,
                     photo_path=player_photo_paths.get(name),
-                    height=r.get("height"), pos=r.get("pos"))
+                    height=r.get("height"), pos=r.get("pos"),
+                    strengths=player_strengths.get(name))
 
     # ROTATION — key bench players who get regular minutes (5+ GP in last 8)
     pdf.ln(2)
@@ -2113,7 +2157,8 @@ def main():
         r = roster_map.get(name, {})
         player_card(pdf, name, jersey, role, stats, note, is_starter=False,
                     photo_path=player_photo_paths.get(name),
-                    height=r.get("height"), pos=r.get("pos"))
+                    height=r.get("height"), pos=r.get("pos"),
+                    strengths=player_strengths.get(name))
 
     # BENCH — situational / fringe players
     pdf.ln(2)
@@ -2144,7 +2189,8 @@ def main():
         r = roster_map.get(name, {})
         player_card(pdf, name, jersey, role, stats, note, is_starter=False,
                     photo_path=player_photo_paths.get(name),
-                    height=r.get("height"), pos=r.get("pos"))
+                    height=r.get("height"), pos=r.get("pos"),
+                    strengths=player_strengths.get(name))
 
     pdf.output("mockup_s1s2.pdf")
     print("Mockup saved to mockup_s1s2.pdf")
