@@ -2216,20 +2216,138 @@ def main():
     pdf.subsection("2.1b Rotation Patterns")
     pdf.ln(3)
 
-    # Rotation data (hardcoded from analysis above — in prod, compute dynamically)
-    rotation_rows = [
-        # (Pos, Starter, jersey, MPG, Sub1, j1, mpg1, Sub2, j2, mpg2, Pattern)
-        ("G", "Takács", "11", "33", "Zöldi", "2", "13", "—", "", "",
-         "Rests mid-Q1 & mid-Q2. Out ~min 6 and ~min 17. Stays in for Q4 crunch."),
-        ("W", "Fekete", "7", "29", "Karosi", "25", "14", "Krasovec", "14", "10",
-         "Most durable — fewest subs. First rest ~min 8. Often plays full Q4."),
-        ("W", "Farkas", "9", "27", "Zöldi", "2", "13", "Krasovec", "14", "10",
-         "Most rotated. Rests every quarter. Shared guard/wing backup with Zöldi."),
-        ("C", "Olasz", "34", "22", "Andrássy", "15", "14", "—", "", "",
-         "Clear 1-for-1 center swap (14x). Andrássy enters ~min 6 each half."),
-        ("F", "Bérces", "12", "23", "Halasy", "0", "11", "Pleesz", "20", "12",
-         "Most flexible — 3 backups. Pleesz is swing sub (also covers center)."),
-    ]
+    # Build rotation_rows dynamically from projected_five, sub_pairs, backup_map
+    rotation_rows = []
+    # Compute MPG per player from substitution tracking (same approach as lineup tracker)
+    player_mpg_map = {}  # name -> {"mpg": int, "gp": int}
+    try:
+        mpg_conn = sqlite3.connect(PBP_DB)
+        mpg_cur = mpg_conn.cursor()
+        mpg_cur.execute("""
+            SELECT match_id, vs FROM (
+                SELECT m.match_id,
+                       CASE WHEN m.team_a=? THEN 'A' ELSE 'B' END as vs,
+                       ROW_NUMBER() OVER (ORDER BY m.match_date DESC) as rn
+                FROM matches m WHERE m.comp_code=?
+                  AND (m.team_a=? OR m.team_b=?)
+            ) WHERE rn <= 8
+        """, (team_exact, COMP, team_exact, team_exact))
+        mpg_matches = mpg_cur.fetchall()
+
+        from collections import defaultdict as _dd_mpg
+        player_minutes_total = _dd_mpg(lambda: {'min': 0.0, 'games': set()})
+
+        for mid, vs in mpg_matches:
+            # Find starters for this match
+            mpg_cur.execute("""
+                WITH fsi AS (
+                    SELECT player_in, MIN(event_seq) fi FROM substitutions WHERE match_id=? AND team=? GROUP BY player_in
+                ), fso AS (
+                    SELECT player_out, MIN(event_seq) fo FROM substitutions WHERE match_id=? AND team=? GROUP BY player_out
+                )
+                SELECT fso.player_out FROM fso
+                WHERE NOT EXISTS (SELECT 1 FROM fsi WHERE fsi.player_in=fso.player_out AND fsi.fi<fso.fo)
+            """, (mid, vs, mid, vs))
+            on_court = set(r[0] for r in mpg_cur.fetchall())
+            if len(on_court) != 5:
+                continue
+
+            # Get all subs with minute data
+            mpg_cur.execute("""
+                SELECT s.event_seq, s.player_out, s.player_in,
+                       COALESCE((SELECT e.minute FROM events e WHERE e.match_id=s.match_id
+                        AND e.event_seq <= s.event_seq ORDER BY e.event_seq DESC LIMIT 1), 0)
+                FROM substitutions s WHERE s.match_id=? AND s.team=?
+                ORDER BY s.event_seq
+            """, (mid, vs))
+            subs = mpg_cur.fetchall()
+
+            last_min = 0
+            for seq, po, pi, mn in subs:
+                elapsed = max(mn - last_min, 0)
+                for p in on_court:
+                    player_minutes_total[p]['min'] += elapsed
+                    player_minutes_total[p]['games'].add(mid)
+                last_min = mn
+                on_court.discard(po)
+                on_court.add(pi)
+
+            # End of game (40 min)
+            elapsed = max(40 - last_min, 0)
+            for p in on_court:
+                player_minutes_total[p]['min'] += elapsed
+                player_minutes_total[p]['games'].add(mid)
+
+        for pname, pdata in player_minutes_total.items():
+            gp = len(pdata['games'])
+            mpg = round(pdata['min'] / max(gp, 1))
+            player_mpg_map[pname] = {"mpg": int(mpg), "gp": gp}
+
+        mpg_conn.close()
+        print(f"  Computed MPG for {len(player_mpg_map)} players from sub tracking")
+    except Exception as e:
+        print(f"  MPG query failed: {e}")
+
+    # Also compute sub counts per starter (total subs out in last 8)
+    starter_sub_counts = {}  # starter_name -> total times subbed out
+    for sname in starter_names:
+        total_subs = sum(cnt for _, cnt in sub_pairs.get(sname, []))
+        starter_sub_counts[sname] = total_subs
+
+    for slot, sname, jersey, pos_label, height, ppg, note in projected_five:
+        # Position label for rotation table
+        if slot == "PG":
+            pos_short = "G"
+        elif slot in ("LW", "RW"):
+            pos_short = "W"
+        else:
+            pos_short = "C" if pos_category(sname) == "big" else "F"
+
+        short_name = sname.split()[0]  # Last name
+        sj = roster_map.get(sname, {}).get("jersey", "?")
+        mpg_val = str(player_mpg_map.get(sname, {}).get("mpg", "?"))
+
+        # Get top 2 backups
+        backups = backup_map.get(sname, [])
+        sub1_name, sub1_j, sub1_mpg = "—", "", ""
+        sub2_name, sub2_j, sub2_mpg = "—", "", ""
+        if len(backups) >= 1:
+            b1_name, b1_jersey, b1_height, b1_cnt = backups[0]
+            sub1_name = b1_name.split()[0]
+            sub1_j = b1_jersey
+            sub1_mpg = str(player_mpg_map.get(b1_name, {}).get("mpg", "?"))
+        if len(backups) >= 2:
+            b2_name, b2_jersey, b2_height, b2_cnt = backups[1]
+            sub2_name = b2_name.split()[0]
+            sub2_j = b2_jersey
+            sub2_mpg = str(player_mpg_map.get(b2_name, {}).get("mpg", "?"))
+
+        # Auto-generate pattern description
+        total_subs = starter_sub_counts.get(sname, 0)
+        mpg_int = player_mpg_map.get(sname, {}).get("mpg", 0)
+        if len(backups) == 0:
+            pattern = f"No regular backup pattern. Plays ~{mpg_int}' per game."
+        elif len(backups) == 1:
+            b1_cnt_val = backups[0][3]
+            pattern = f"Clear 1-for-1 swap with {backups[0][0].split()[0]} ({b1_cnt_val}x sub). "
+            if mpg_int >= 30:
+                pattern += "High-minutes starter."
+            else:
+                pattern += f"Rests regularly (~{40 - mpg_int}' off)."
+        else:
+            b1_cnt_val = backups[0][3]
+            b2_cnt_val = backups[1][3]
+            pattern = f"Primary backup: {backups[0][0].split()[0]} ({b1_cnt_val}x), secondary: {backups[1][0].split()[0]} ({b2_cnt_val}x). "
+            if total_subs >= 20:
+                pattern += "Most rotated — rests frequently."
+            elif mpg_int >= 28:
+                pattern += "Durable — limited rest."
+            else:
+                pattern += f"~{40 - mpg_int}' off per game."
+
+        rotation_rows.append((pos_short, short_name, sj, mpg_val,
+                              sub1_name, sub1_j, sub1_mpg,
+                              sub2_name, sub2_j, sub2_mpg, pattern))
 
     # Table header
     col_widths = [8, 22, 24, 24, 92]  # Pos, Starter+MPG, Sub1+MPG, Sub2+MPG, Pattern
@@ -2492,32 +2610,161 @@ def main():
     pdf.cell(0, 6, "STARTERS")
     pdf.ln(7)
 
-    # Strength tags per player (based on PBP analysis)
-    # Colors: green=shooting, blue=playmaking, orange=rebounding, red=defense, purple=paint
-    C_3PT = (39, 174, 96)      # green - shooter
-    C_AST = (41, 128, 185)     # blue - playmaker
-    C_OREB = (230, 126, 34)    # orange - offensive boards
-    C_DREB = (211, 84, 0)      # dark orange - defensive boards
-    C_STL = (192, 57, 43)      # red - steals
-    C_BLK = (142, 68, 173)     # purple - blocks
-    C_PAINT = (127, 140, 141)  # steel - paint scorer
-    C_FT = (52, 73, 94)        # dark - FT drawing
-    C_VOL = (44, 62, 80)       # dark blue - volume scorer
+    # Uniform tag color (dark gray) for all strength tags
+    C_TAG = (60, 60, 65)
 
-    player_strengths = {
-        "Takács Dániel":         [("PLAYMAKER", C_AST), ("DREB", C_DREB), ("FT DRAW", C_FT)],
-        "Fekete Viktor Norbert": [("VOLUME", C_VOL), ("DREB", C_DREB), ("PLAYMAKER", C_AST), ("FT DRAW", C_FT)],
-        "Farkas Attila":         [("3PT SHOOTER", C_3PT), ("PLAYMAKER", C_AST)],
-        "Bérces Dániel":         [("OREB", C_OREB), ("DREB", C_DREB)],
-        "Olasz Ádám Zsolt":      [("PAINT", C_PAINT), ("OREB", C_OREB), ("DREB", C_DREB), ("FT DRAW", C_FT)],
-        "Andrássy Géza":         [("SHOT BLOCKER", C_BLK), ("OREB", C_OREB), ("DREB", C_DREB)],
-        "Halasy Örs":            [("OREB", C_OREB)],
-        "Pleesz Ádám":           [("PAINT", C_PAINT), ("OREB", C_OREB), ("DREB", C_DREB)],
-        "Krasovec Ádám":         [("3PT", C_3PT), ("DREB", C_DREB)],
-        "Zöldi Péter András":    [("3PT", C_3PT), ("PLAYMAKER", C_AST)],
-        "Karosi Gergely":        [],
-        "Makkos Dávid":          [("STEALS", C_STL), ("PLAYMAKER", C_AST), ("OREB", C_OREB)],
-    }
+    # ── Compute per-player full stats from PBP events (for cards + strengths) ──
+    player_full_stats = {}  # name -> dict with all per-game stats
+    try:
+        pfs_conn = sqlite3.connect(PBP_DB)
+        pfs_cur = pfs_conn.cursor()
+        pfs_cur.execute("""
+            SELECT e.player_name,
+                COUNT(DISTINCT e.match_id) as gp,
+                -- Points
+                SUM(CASE WHEN event_type IN ('CLOSE_MADE','MID_MADE','DUNK_MADE') THEN 2
+                         WHEN event_type='THREE_MADE' THEN 3
+                         WHEN event_type='FT_MADE' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as ppg,
+                -- Rebounds
+                SUM(CASE WHEN event_type IN ('OREB','DREB') THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as rpg,
+                SUM(CASE WHEN event_type='OREB' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as oreb_pg,
+                SUM(CASE WHEN event_type='DREB' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as dreb_pg,
+                -- Assists
+                SUM(CASE WHEN event_type='AST' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as apg,
+                -- Turnovers
+                SUM(CASE WHEN event_type='TOV' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as tpg,
+                -- Fouls
+                SUM(CASE WHEN event_type='FOUL' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as fpg,
+                -- Steals
+                SUM(CASE WHEN event_type='STL' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as spg,
+                -- Blocks
+                SUM(CASE WHEN event_type='BLK' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as bpg,
+                -- FT drawn per game
+                SUM(CASE WHEN event_type='FOUL_DRAWN' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as ft_drawn_pg,
+                -- FG% (2P + 3P)
+                CASE WHEN SUM(CASE WHEN event_type IN ('CLOSE_MADE','MID_MADE','DUNK_MADE','THREE_MADE',
+                    'CLOSE_MISS','MID_MISS','DUNK_MISS','THREE_MISS') THEN 1 ELSE 0 END) > 0
+                    THEN ROUND(SUM(CASE WHEN event_type IN ('CLOSE_MADE','MID_MADE','DUNK_MADE','THREE_MADE') THEN 1 ELSE 0 END)*100.0 /
+                         SUM(CASE WHEN event_type IN ('CLOSE_MADE','MID_MADE','DUNK_MADE','THREE_MADE',
+                             'CLOSE_MISS','MID_MISS','DUNK_MISS','THREE_MISS') THEN 1 ELSE 0 END), 1)
+                    ELSE 0 END as fg_pct,
+                -- 3P% and 3PA total
+                CASE WHEN SUM(CASE WHEN event_type IN ('THREE_MADE','THREE_MISS') THEN 1 ELSE 0 END) > 0
+                    THEN ROUND(SUM(CASE WHEN event_type='THREE_MADE' THEN 1 ELSE 0 END)*100.0 /
+                         SUM(CASE WHEN event_type IN ('THREE_MADE','THREE_MISS') THEN 1 ELSE 0 END), 1)
+                    ELSE 0 END as three_pct,
+                SUM(CASE WHEN event_type IN ('THREE_MADE','THREE_MISS') THEN 1 ELSE 0 END) as three_att_total,
+                SUM(CASE WHEN event_type IN ('THREE_MADE','THREE_MISS') THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as three_att_pg,
+                -- FT%
+                CASE WHEN SUM(CASE WHEN event_type IN ('FT_MADE','FT_MISS') THEN 1 ELSE 0 END) > 0
+                    THEN ROUND(SUM(CASE WHEN event_type='FT_MADE' THEN 1 ELSE 0 END)*100.0 /
+                         SUM(CASE WHEN event_type IN ('FT_MADE','FT_MISS') THEN 1 ELSE 0 END), 1)
+                    ELSE 0 END as ft_pct,
+                -- Paint stats (CLOSE + DUNK = paint)
+                CASE WHEN SUM(CASE WHEN event_type IN ('CLOSE_MADE','DUNK_MADE','CLOSE_MISS','DUNK_MISS') THEN 1 ELSE 0 END) > 0
+                    THEN ROUND(SUM(CASE WHEN event_type IN ('CLOSE_MADE','DUNK_MADE') THEN 1 ELSE 0 END)*100.0 /
+                         SUM(CASE WHEN event_type IN ('CLOSE_MADE','DUNK_MADE','CLOSE_MISS','DUNK_MISS') THEN 1 ELSE 0 END), 1)
+                    ELSE 0 END as paint_pct,
+                SUM(CASE WHEN event_type IN ('CLOSE_MADE','DUNK_MADE','CLOSE_MISS','DUNK_MISS') THEN 1 ELSE 0 END) as paint_att_total,
+                -- Total OREB count (for threshold)
+                SUM(CASE WHEN event_type='OREB' THEN 1 ELSE 0 END) as oreb_total,
+                SUM(CASE WHEN event_type='DREB' THEN 1 ELSE 0 END) as dreb_total
+            FROM events e
+            JOIN matches m ON e.match_id = m.match_id
+            WHERE m.comp_code=? AND e.player_name != ''
+              AND ((m.team_a=? AND e.team='A') OR (m.team_b=? AND e.team='B'))
+            GROUP BY e.player_name
+        """, (COMP, team_exact, team_exact))
+        for row in pfs_cur.fetchall():
+            player_full_stats[row[0]] = {
+                "gp": row[1], "ppg": round(row[2], 1), "rpg": round(row[3], 1),
+                "oreb_pg": round(row[4], 1), "dreb_pg": round(row[5], 1),
+                "apg": round(row[6], 1), "tpg": round(row[7], 1), "fpg": round(row[8], 1),
+                "spg": round(row[9], 1), "bpg": round(row[10], 1),
+                "ft_drawn_pg": round(row[11], 1),
+                "fg_pct": row[12], "three_pct": row[13],
+                "three_att_total": row[14], "three_att_pg": round(row[15], 1),
+                "ft_pct": row[16], "paint_pct": row[17], "paint_att_total": row[18],
+                "oreb_total": row[19], "dreb_total": row[20],
+            }
+        pfs_conn.close()
+        print(f"  Computed full stats for {len(player_full_stats)} {TEAM.strip('%')} players")
+    except Exception as e:
+        print(f"  Full player stats query failed: {e}")
+
+    # ── Compute league-wide percentiles for strength tag thresholds ──
+    league_stats_all = {}  # stat -> sorted list of values across all players (min 10 GP)
+    try:
+        lg_conn = sqlite3.connect(PBP_DB)
+        lg_cur = lg_conn.cursor()
+        lg_cur.execute("""
+            SELECT e.player_name,
+                COUNT(DISTINCT e.match_id) as gp,
+                SUM(CASE WHEN event_type IN ('CLOSE_MADE','MID_MADE','DUNK_MADE') THEN 2
+                         WHEN event_type='THREE_MADE' THEN 3
+                         WHEN event_type='FT_MADE' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as ppg,
+                SUM(CASE WHEN event_type='AST' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as apg,
+                SUM(CASE WHEN event_type='OREB' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as oreb_pg,
+                SUM(CASE WHEN event_type='DREB' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as dreb_pg,
+                SUM(CASE WHEN event_type='STL' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as spg,
+                SUM(CASE WHEN event_type='BLK' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as bpg
+            FROM events e JOIN matches m ON e.match_id = m.match_id
+            WHERE m.comp_code=? AND e.player_name != ''
+            GROUP BY e.player_name HAVING gp >= 10
+        """, (COMP,))
+        lg_rows = lg_cur.fetchall()
+        lg_conn.close()
+        league_stats_all = {
+            'ppg': sorted(r[2] for r in lg_rows),
+            'apg': sorted(r[3] for r in lg_rows),
+            'oreb_pg': sorted(r[4] for r in lg_rows),
+            'dreb_pg': sorted(r[5] for r in lg_rows),
+            'spg': sorted(r[6] for r in lg_rows),
+            'bpg': sorted(r[7] for r in lg_rows),
+        }
+    except Exception as e:
+        print(f"  League percentile query failed: {e}")
+
+    def league_pctile(val, stat_key):
+        """Return percentile (0-100) for a value in the league distribution."""
+        vals = league_stats_all.get(stat_key, [])
+        if not vals:
+            return 0
+        return round(sum(1 for v in vals if v < val) * 100.0 / len(vals))
+
+    # ── Auto-compute player_strengths from stats + percentiles ──
+    player_strengths = {}
+    for pname, pstats in player_full_stats.items():
+        tags = []
+        # PPG > 75th percentile → VOLUME
+        if league_pctile(pstats['ppg'], 'ppg') > 75:
+            tags.append(("VOLUME", C_TAG))
+        # APG > 75th percentile → PLAYMAKER
+        if league_pctile(pstats['apg'], 'apg') > 75:
+            tags.append(("PLAYMAKER", C_TAG))
+        # OREB > 70th percentile → OREB
+        if league_pctile(pstats['oreb_pg'], 'oreb_pg') > 70:
+            tags.append(("OREB", C_TAG))
+        # DREB > 70th percentile → DREB
+        if league_pctile(pstats['dreb_pg'], 'dreb_pg') > 70:
+            tags.append(("DREB", C_TAG))
+        # SPG > 75th percentile → STEALS
+        if league_pctile(pstats['spg'], 'spg') > 75:
+            tags.append(("STEALS", C_TAG))
+        # BPG > 75th percentile → SHOT BLOCKER
+        if league_pctile(pstats['bpg'], 'bpg') > 75:
+            tags.append(("SHOT BLOCKER", C_TAG))
+        # 3PT% > 33% and 3PA > 2/game → 3PT SHOOTER
+        if pstats['three_pct'] > 33 and pstats['three_att_pg'] > 2:
+            tags.append(("3PT SHOOTER", C_TAG))
+        # Paint FG% > 55% and paint attempts > 50 → PAINT
+        if pstats['paint_pct'] > 55 and pstats['paint_att_total'] > 50:
+            tags.append(("PAINT", C_TAG))
+        # FT drawn per game > 2.0 → FT DRAW
+        if pstats['ft_drawn_pg'] > 2.0:
+            tags.append(("FT DRAW", C_TAG))
+        player_strengths[pname] = tags
+    print(f"  Auto-computed strength tags for {len(player_strengths)} players")
 
     # Per-player zone data is now in player_subzones (built from shots table in section 1.4)
 
@@ -2579,39 +2826,155 @@ def main():
     except Exception as e:
         print(f"  Percentile calc error: {e}")
 
-    # Starters sorted by position: PG → W → W → F → C
-    starters = [
-        ("#11", "Takács Dániel", "Floor General / Point Guard",
-         {"mpg": "30", "ppg": "8.6", "fg": "35", "3p": "30", "ft": "78",
-          "rpg": "3.1", "apg": "4.1", "tpg": "2.2", "fpg": "2.3"},
-         "Top assist man (4.1 APG). Most minutes on the team. "
-         "Turnover-prone (2.2 TPG). Pressure the ball."),
-        ("#7", "Fekete Viktor Norbert", "Primary Scorer / Wing",
-         {"mpg": "29", "ppg": "13.0", "fg": "38", "3p": "27", "ft": "78",
-          "rpg": "5.4", "apg": "3.4", "tpg": "2.0", "fpg": "1.8"},
-         "Does everything but shoots inefficiently. Volume shooter (11.2 FGA). "
-         "Dare him to shoot 3s (27%). Guard the drive and mid-range."),
-        ("#9", "Farkas Attila", "Combo Guard / Wing",
-         {"mpg": "25", "ppg": "10.2", "fg": "44", "3p": "36", "ft": "81",
-          "rpg": "3.0", "apg": "3.0", "tpg": "1.1", "fpg": "2.1"},
-         "Best shooter on the team (36% 3P). Hot form: 13.6 PPG last 5 on 54% FG. "
-         "Most dangerous offensive weapon."),
-        ("#12", "Bérces Dániel", "Wing / Forward",
-         {"mpg": "23", "ppg": "6.9", "fg": "41", "3p": "29", "ft": "62",
-          "rpg": "3.8", "apg": "1.3", "tpg": "0.9", "fpg": "2.5"},
-         "Consistent starter (5/5 last). Foul-prone (2.5 FPG). "
-         "Weak FT (62%) — foul him in crunch time."),
-        ("#34", "Olasz Ádám Zsolt", "Inside Presence / Center",
-         {"mpg": "19", "ppg": "11.3", "fg": "58", "3p": "-", "ft": "70",
-          "rpg": "5.4", "apg": "2.0", "tpg": "1.3", "fpg": "1.5"},
-         "Paint beast — 59% from paint (167 att). No 3PT threat (5 att all season). "
-         "Front him, deny the entry pass."),
-    ]
+    # ── Build starters, rotation, bench dynamically from projected_five + stats ──
+    def _build_role(name, slot):
+        """Generate a role description from position + slot."""
+        r = roster_map.get(name, {})
+        pos = r.get("pos", "")
+        pos_map_role = {"1": "Point Guard", "1-2": "Guard", "2-3": "Wing",
+                        "3-4": "Wing / Forward", "4-5": "Forward / Center"}
+        base_role = pos_map_role.get(pos, "Player")
+        if slot == "PG":
+            return f"Point Guard" if pos in ("1", "1-2") else f"Guard / Ball Handler"
+        elif slot in ("LW", "RW"):
+            return base_role
+        else:
+            return "Center / Big" if pos == "4-5" else "Forward / Big"
+
+    def _build_note(name, pstats, is_starter=True):
+        """Auto-generate scout note from stats."""
+        if not pstats:
+            return "Limited data available."
+        parts = []
+        # Highlight top strength
+        if pstats['ppg'] >= 10:
+            parts.append(f"Scores {pstats['ppg']} PPG")
+        if pstats['apg'] >= 3.0:
+            parts.append(f"facilitator ({pstats['apg']} APG)")
+        if pstats['rpg'] >= 5.0:
+            parts.append(f"strong rebounder ({pstats['rpg']} RPG)")
+        if pstats['three_pct'] >= 35 and pstats['three_att_pg'] >= 2:
+            parts.append(f"3PT threat ({pstats['three_pct']}%)")
+        if pstats['paint_pct'] >= 55 and pstats['paint_att_total'] >= 30:
+            parts.append(f"efficient inside ({pstats['paint_pct']}% paint)")
+        if not parts:
+            parts.append(f"{pstats['ppg']} PPG on {pstats['fg_pct']}% FG")
+        note = ". ".join(parts[:2]) + ". " if parts else ""
+        # Add weakness
+        if pstats['tpg'] >= 2.0:
+            note += f"Turnover-prone ({pstats['tpg']} TPG). "
+        if pstats['fpg'] >= 2.5:
+            note += f"Foul-prone ({pstats['fpg']} FPG). "
+        if pstats['ft_pct'] > 0 and pstats['ft_pct'] < 65:
+            note += f"Weak FT ({pstats['ft_pct']:.0f}%) — foul in crunch. "
+        if pstats['three_pct'] < 25 and pstats['three_att_total'] > 20:
+            note += f"Poor 3PT shooter ({pstats['three_pct']:.0f}%). "
+        if pstats['three_att_total'] <= 5:
+            note += "No 3PT threat. "
+        return note.strip() if note.strip() else f"{pstats['ppg']} PPG, {pstats['rpg']} RPG."
+
+    def _build_card_stats(name, pstats):
+        """Build stats dict for player_card from full stats."""
+        mpg = str(player_mpg_map.get(name, {}).get("mpg", "0"))
+        if not pstats:
+            return {"mpg": mpg, "ppg": "0", "fg": "0", "3p": "-", "ft": "-",
+                    "rpg": "0", "apg": "0", "tpg": "0", "fpg": "0"}
+        three_display = str(int(pstats['three_pct'])) if pstats['three_att_total'] > 5 else "-"
+        ft_display = str(int(pstats['ft_pct'])) if pstats['ft_pct'] > 0 else "-"
+        return {
+            "mpg": mpg,
+            "ppg": str(pstats['ppg']),
+            "fg": str(int(pstats['fg_pct'])),
+            "3p": three_display,
+            "ft": ft_display,
+            "rpg": str(pstats['rpg']),
+            "apg": str(pstats['apg']),
+            "tpg": str(pstats['tpg']),
+            "fpg": str(pstats['fpg']),
+        }
+
+    # Build starters list from projected_five
+    starters = []
+    for slot, name, jersey, pos_label, height, ppg_val, starter_note in projected_five:
+        pstats = player_full_stats.get(name, {})
+        role = _build_role(name, slot)
+        stats = _build_card_stats(name, pstats)
+        note = _build_note(name, pstats, is_starter=True)
+        starters.append((f"#{jersey}", name, role, stats, note))
+
+    # Identify bench/rotation players: everyone in backup_map who is NOT a starter
+    bench_players_set = set()
+    for sname in starter_names:
+        for bname, bj, bh, cnt in backup_map.get(sname, []):
+            bench_players_set.add(bname)
+
+    # Also include any players with significant GP not in starters or backup_map
+    for pname, pstats in player_full_stats.items():
+        if pname not in starter_names and pstats.get('gp', 0) >= 5:
+            bench_players_set.add(pname)
+
+    # Classify: ROTATION (played 5+ of last 8 games or high MPG) vs BENCH
+    rotation_players = []
+    bench_only_players = []
+    for pname in bench_players_set:
+        if pname in starter_names:
+            continue
+        gp_last8 = player_mpg_map.get(pname, {}).get("gp", 0)
+        mpg = player_mpg_map.get(pname, {}).get("mpg", 0)
+        # Count total sub appearances for this player
+        total_sub_in = sum(cnt for sname in starter_names
+                          for bname, cnt in sub_pairs.get(sname, [])
+                          if bname == pname)
+        if gp_last8 >= 5 or (gp_last8 >= 3 and mpg >= 12):
+            rotation_players.append((pname, mpg, gp_last8, total_sub_in))
+        else:
+            bench_only_players.append((pname, mpg, gp_last8, total_sub_in))
+
+    # Sort by MPG descending
+    rotation_players.sort(key=lambda x: -x[1])
+    bench_only_players.sort(key=lambda x: -x[1])
+
+    # Build rotation card data
+    rotation = []
+    for pname, mpg, gp, sub_in_cnt in rotation_players:
+        r = roster_map.get(pname, {})
+        jersey = f"#{r.get('jersey', '?')}"
+        pstats = player_full_stats.get(pname, {})
+        pos = r.get("pos", "")
+        pos_map_bench = {"1": "Guard Backup", "1-2": "Guard Backup", "2-3": "Wing Backup",
+                         "3-4": "Swing Big", "4-5": "Backup Center / Big"}
+        role = pos_map_bench.get(pos, "Bench Player")
+        stats = _build_card_stats(pname, pstats)
+        note = _build_note(pname, pstats, is_starter=False)
+        # Add GP context
+        note += f" {gp}/8 GP last 8."
+        rotation.append((jersey, pname, role, stats, note.strip()))
+
+    # Build bench card data
+    bench = []
+    for pname, mpg, gp, sub_in_cnt in bench_only_players:
+        r = roster_map.get(pname, {})
+        jersey = f"#{r.get('jersey', '?')}"
+        pstats = player_full_stats.get(pname, {})
+        pos = r.get("pos", "")
+        pos_map_bench = {"1": "Guard Depth", "1-2": "Guard Depth", "2-3": "Wing Depth",
+                         "3-4": "Swing Forward", "4-5": "Big Depth"}
+        role = pos_map_bench.get(pos, "Bench")
+        stats = _build_card_stats(pname, pstats)
+        note = _build_note(pname, pstats, is_starter=False)
+        note += f" {gp}/8 GP last 8."
+        # Add context about total GP if relevant
+        total_gp = player_full_stats.get(pname, {}).get('gp', 0)
+        if total_gp < 15:
+            note += f" Only {total_gp} GP total."
+        bench.append((jersey, pname, role, stats, note.strip()))
+
+    print(f"  Player cards: {len(starters)} starters, {len(rotation)} rotation, {len(bench)} bench")
 
     # Download photos for all player card players (reuse existing + fetch missing)
-    all_card_names = [n for _, n, *_ in starters] + [
-        "Andrássy Géza", "Halasy Örs", "Pleesz Ádám", "Krasovec Ádám",
-        "Zöldi Péter András", "Karosi Gergely", "Makkos Dávid"]
+    all_card_names = [n for _, n, *_ in starters] + \
+                     [n for _, n, *_ in rotation] + \
+                     [n for _, n, *_ in bench]
     for pname in all_card_names:
         if pname not in player_photo_paths:
             pic_url = roster_map.get(pname, {}).get("pic_url", "")
@@ -2635,35 +2998,12 @@ def main():
                     player_zones=player_subzones.get(name),
                     percentiles=player_percentiles.get(name))
 
-    # ROTATION — key bench players who get regular minutes (5+ GP in last 8)
+    # ROTATION — key bench players who get regular minutes
     pdf.ln(2)
     pdf.set_font("Arial", "B", 10)
     pdf.set_text_color(180, 130, 30)
     pdf.cell(0, 6, "ROTATION")
     pdf.ln(7)
-
-    rotation = [
-        ("#15", "Andrássy Géza", "Backup Center / Big",
-         {"mpg": "16", "ppg": "8.0", "fg": "46", "3p": "8", "ft": "72",
-          "rpg": "4.5", "apg": "1.4", "tpg": "1.4", "fpg": "2.0"},
-         "Primary Olasz backup (14x sub). Top shot blocker (0.6 BPG). "
-         "No 3PT range (8%). Effective inside (55% paint FG)."),
-        ("#0", "Halasy Örs", "Wing Backup",
-         {"mpg": "11", "ppg": "3.4", "fg": "38", "3p": "25", "ft": "60",
-          "rpg": "2.0", "apg": "0.6", "tpg": "0.4", "fpg": "1.2"},
-         "Bérces primary backup (8x sub). Young wing (2008 born, 200cm). "
-         "Limited offensive role but gives size on the wing."),
-        ("#20", "Pleesz Ádám", "Swing Big",
-         {"mpg": "12", "ppg": "4.3", "fg": "55", "3p": "20", "ft": "73",
-          "rpg": "3.6", "apg": "1.1", "tpg": "0.6", "fpg": "1.8"},
-         "Swing sub — covers both Bérces (7x) and center. "
-         "Efficient inside (55% FG). Low turnover, steady."),
-        ("#14", "Krasovec Ádám", "Backup Big / Wing",
-         {"mpg": "10", "ppg": "3.0", "fg": "40", "3p": "20", "ft": "60",
-          "rpg": "2.8", "apg": "0.4", "tpg": "0.6", "fpg": "1.4"},
-         "Tallest player (207cm). Backup for Fekete + Farkas. "
-         "Physical presence but limited skill set."),
-    ]
 
     for jersey, name, role, stats, note in rotation:
         r = roster_map.get(name, {})
@@ -2680,24 +3020,6 @@ def main():
     pdf.set_text_color(120, 120, 120)
     pdf.cell(0, 6, "BENCH")
     pdf.ln(7)
-
-    bench = [
-        ("#2", "Zöldi Péter András", "Young Guard",
-         {"mpg": "13", "ppg": "5.8", "fg": "35", "3p": "28", "ft": "65",
-          "rpg": "1.5", "apg": "1.2", "tpg": "1.0", "fpg": "1.0"},
-         "Guard backup for Takács (4x) and Farkas (5x). "
-         "Young (2008 born). Developing player, 4/8 GP last 8."),
-        ("#25", "Karosi Gergely", "Wing Depth",
-         {"mpg": "14", "ppg": "3.3", "fg": "35", "3p": "25", "ft": "70",
-          "rpg": "1.8", "apg": "0.8", "tpg": "0.6", "fpg": "1.0"},
-         "Fekete backup (3x sub). 3/8 GP in last 8. "
-         "Situational wing — limited minutes."),
-        ("#3", "Makkos Dávid", "Energy / Forward",
-         {"mpg": "20", "ppg": "6.0", "fg": "46", "3p": "12", "ft": "40",
-          "rpg": "3.2", "apg": "2.2", "tpg": "1.4", "fpg": "2.5"},
-         "Only 13 GP — availability issues. Horrible FT (40%). "
-         "Good rebounder + passer for his size. Not in recent rotation."),
-    ]
 
     for jersey, name, role, stats, note in bench:
         r = roster_map.get(name, {})
