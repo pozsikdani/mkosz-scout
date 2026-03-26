@@ -495,31 +495,48 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
                         pdf.set_fill_color(r, g, b)
                         pdf.rect(max(dr_x, il), y_pos, ir - max(dr_x, il), sh, "F")
 
+        # ── Mask bleed outside court edges ──
+        panel_bg = (240, 240, 245)
+        pdf.set_fill_color(*panel_bg)
+        # Left of court
+        if zc_x > sp_x:
+            pdf.rect(sp_x, zc_y - 0.5, zc_x - sp_x, zc_h + 1, "F")
+        # Right of court
+        if zc_x + zc_w < sp_x + sp_w:
+            pdf.rect(zc_x + zc_w, zc_y - 0.5, sp_x + sp_w - (zc_x + zc_w), zc_h + 1, "F")
+        # Below court
+        pdf.rect(sp_x, zc_y + zc_h, sp_w, 1, "F")
+
         # ── Court lines (white on colored zones) ──
         pdf.set_draw_color(255, 255, 255)
-        pdf.set_line_width(0.4)
 
-        # Court outline
+        # Thick court outline to mask any bleed at edges
+        pdf.set_line_width(0.6)
         pdf.rect(zc_x, zc_y, zc_w, zc_h, "D")
-        # Paint rectangle
+
+        # Paint rectangle (slightly thicker to clearly separate from mid-range)
+        pdf.set_line_width(0.5)
         pdf.rect(zp_x, zp_y, zp_w, zp_h, "D")
 
         # Free throw half-circle
         ft_r = zp_w / 2
         ft_cx = basket_cx
         ft_cy = zc_y + zp_h
-        for a in range(0, 180, 3):
-            a1, a2 = math.radians(a), math.radians(a + 3)
+        pdf.set_line_width(0.4)
+        for a in range(0, 180, 2):
+            a1, a2 = math.radians(a), math.radians(a + 2)
             pdf.line(ft_cx + ft_r * math.cos(a1), ft_cy + ft_r * math.sin(a1),
                      ft_cx + ft_r * math.cos(a2), ft_cy + ft_r * math.sin(a2))
 
         # 3-point corner straights
+        pdf.set_line_width(0.5)
         corner_lx = zc_x + corner_w
         corner_rx = zc_x + zc_w - corner_w
         pdf.line(corner_lx, zc_y, corner_lx, zc_y + corner_h)
         pdf.line(corner_rx, zc_y, corner_rx, zc_y + corner_h)
 
-        # 3-point arc
+        # 3-point arc (thicker for clear zone separation)
+        pdf.set_line_width(0.5)
         start_angle = math.degrees(math.asin(max(0, min(1, corner_h / three_r)))) if three_r > 0 else 10
         for a in range(int(start_angle), 180 - int(start_angle), 2):
             a1, a2 = math.radians(a), math.radians(a + 2)
@@ -528,8 +545,8 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
             if zc_x <= x1 <= zc_x + zc_w and zc_x <= x2 <= zc_x + zc_w:
                 pdf.line(x1, y1, x2, y2)
 
-        # Diagonal sector lines
-        pdf.set_line_width(0.25)
+        # Diagonal sector lines (thicker for clear zone separation)
+        pdf.set_line_width(0.35)
         pdf.line(basket_cx, basket_cy, zc_x, zc_y + zc_h)
         pdf.line(basket_cx, basket_cy, zc_x + zc_w, zc_y + zc_h)
 
