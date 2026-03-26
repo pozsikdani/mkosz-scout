@@ -7,9 +7,13 @@ import requests
 from bs4 import BeautifulSoup
 from fpdf import FPDF
 
+import sys
+
 DB = "/Users/danipozsik/Desktop/claudecode/mkosz-stats/mkosz_stats.sqlite"
 PBP_DB = "/Users/danipozsik/Desktop/claudecode/mkosz-play-by-play/pbp.sqlite"
 FONT_DIR = "/System/Library/Fonts/Supplemental/"
+
+# Default team — can be overridden via CLI
 TEAM = "%Vasas%"
 COMP = "hun2a"
 
@@ -645,9 +649,19 @@ def main():
                 if any("Csapat" in h or "%" in h for h in header_cells):
                     for row in rows[1:]:
                         cells = [td.get_text(strip=True) for td in row.find_all("td")]
+                        tds = row.find_all("td")
                         if len(cells) >= 10:
                             rank = cells[0].rstrip(".")
                             team_name = cells[2]
+                            # Extract team page URL (for roster scraping)
+                            team_link = tds[2].find("a") if len(tds) > 2 else None
+                            href = team_link["href"] if team_link and team_link.get("href") else None
+                            if href and href.startswith("/"):
+                                team_href = "https://mkosz.hu" + href
+                            elif href and href.startswith("http"):
+                                team_href = href
+                            else:
+                                team_href = None
                             gp = int(cells[3]) if cells[3].isdigit() else 0
                             wins = int(cells[6]) if cells[6].isdigit() else 0
                             losses = int(cells[7]) if cells[7].isdigit() else 0
@@ -661,6 +675,7 @@ def main():
                                 "gp": gp, "w": wins, "l": losses,
                                 "streak": streak, "home": home_rec,
                                 "away": away_rec, "last5": last5,
+                                "team_url": team_href,
                             })
                             team_records[team_name] = {"w": wins, "l": losses}
                     break
@@ -1586,7 +1601,20 @@ def main():
     pdf.ln(4)
 
     # Scrape roster from mkosz.hu for height + position
-    roster_url = "https://mkosz.hu/csapat/x2526/hun2a/9233/vasas-akademia"
+    # Build roster URL from standings (find team_id + slug)
+    team_short = TEAM.strip("%")
+    roster_url = None
+    for s in standings:
+        if team_short.lower() in s["team"].lower():
+            # Scrape team link from standings page to get team_id
+            roster_url = s.get("team_url")
+            break
+    if not roster_url:
+        # Fallback: try to construct from team name
+        import re as _re
+        slug = _re.sub(r'[^a-z0-9]+', '-', team_short.lower()).strip('-')
+        roster_url = f"https://mkosz.hu/csapat/x2526/{COMP}/0/{slug}"
+        print(f"  Warning: no roster URL found, trying fallback: {roster_url}")
     roster_map = {}  # name -> {jersey, pos, height, birth_year}
     try:
         resp = requests.get(roster_url, timeout=10)
@@ -1647,7 +1675,7 @@ def main():
             FROM matches WHERE comp_code=? AND (team_a LIKE ? OR team_b LIKE ?) LIMIT 1
         """, (TEAM, COMP, TEAM, TEAM))
         row = pbp_cur.fetchone()
-        team_exact = row[0] if row else "Vasas Akadémia"
+        team_exact = row[0] if row else TEAM.strip("%")
 
         pbp_cur.execute("""
             WITH vasas_matches AS (
@@ -2534,11 +2562,12 @@ def main():
         def calc_pctile(val, sorted_list):
             return round(sum(1 for v in sorted_list if v < val) * 100.0 / max(len(sorted_list), 1))
 
-        # Compute percentiles for Vasas players
+        # Compute percentiles for our team's players
+        team_short = TEAM.strip("%")
         for row in all_players:
             name = row[0]
             team = row[1]
-            if team and 'Vasas' in team:
+            if team and team_short in team:
                 pcts = {}
                 for stat_key, idx in stat_indices.items():
                     pcts[stat_key] = calc_pctile(row[idx], sorted_stats[stat_key])
@@ -2546,7 +2575,7 @@ def main():
                 if row[10] is not None and fg_vals:
                     pcts['fg'] = calc_pctile(row[10], fg_vals)
                 player_percentiles[name] = pcts
-        print(f"  Computed percentiles for {len(player_percentiles)} Vasas players (league: {len(all_players)})")
+        print(f"  Computed percentiles for {len(player_percentiles)} {team_short} players (league: {len(all_players)})")
     except Exception as e:
         print(f"  Percentile calc error: {e}")
 
@@ -2679,9 +2708,22 @@ def main():
                     player_zones=player_subzones.get(name),
                     percentiles=player_percentiles.get(name))
 
-    pdf.output("mockup_s1s2.pdf")
-    print("Mockup saved to mockup_s1s2.pdf")
+    import re as _re2
+    team_slug = _re2.sub(r'[^a-z0-9]+', '-', (our_name or TEAM.strip("%")).lower()).strip('-')
+    output_file = f"scout_{team_slug}.pdf"
+    pdf.output(output_file)
+    print(f"Scout report saved to {output_file}")
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1:
+        team_arg = sys.argv[1]
+        TEAM = f"%{team_arg}%"
+        print(f"Generating scout report for: {team_arg}")
+    else:
+        print(f"Usage: python3 {sys.argv[0]} <team_name>")
+        print(f"  e.g.: python3 {sys.argv[0]} Vasas")
+        print(f"        python3 {sys.argv[0]} PVSK")
+        print(f"        python3 {sys.argv[0]} Phoenix")
+        print(f"  Default: Vasas")
     main()
