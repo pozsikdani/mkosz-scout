@@ -287,35 +287,42 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
         pdf.set_fill_color(180, 30, 30)
         pdf.rect(sp_x, sp_y, 0.5, sp_h, "F")
 
-        # Panel header: PPG + FG%
+        # Panel header: PPG + league percentile label
+        ppg_val = stats.get('ppg', '-')
+        fg_val = stats.get('fg', '-')
+
+        # PPG value
         pdf.set_xy(sp_x + 1, sp_y + 1)
         pdf.set_font("Arial", "B", 10)
         pdf.set_text_color(30, 30, 30)
-        ppg_val = stats.get('ppg', '-')
         pdf.cell(sp_w - 2, 5, f"{ppg_val} PPG", align="C")
 
-        fg_val = stats.get('fg', '-')
-        pdf.set_xy(sp_x + 1, sp_y + 5.5)
-        pdf.set_font("Arial", "", 6.5)
+        # FG% + league rank label on same line
+        pdf.set_xy(sp_x + 1, sp_y + 6)
+        pdf.set_font("Arial", "", 6)
         pdf.set_text_color(100, 100, 100)
-        pdf.cell(sp_w - 2, 3.5, f"FG {fg_val}%", align="C")
+        fg_text = f"FG {fg_val}%"
 
-        # PPG percentile bar
         if percentiles and 'ppg' in percentiles:
             ppg_pct = percentiles['ppg']
-            bar_w = sp_w * 0.7
-            bar_x = sp_x + (sp_w - bar_w) / 2
-            bar_y = sp_y + 9.5
-            pdf.set_fill_color(220, 220, 220)
-            pdf.rect(bar_x, bar_y, bar_w, 1.5, "F")
-            if ppg_pct >= 70:
-                pr, pg, pb = 0, 160, 60
-            elif ppg_pct >= 40:
-                pr, pg, pb = 200, 160, 30
+            top_pct = 100 - ppg_pct  # P75 = top 25%
+
+            # Color based on how good: top 30% = green, bottom 60% = red, middle = gray
+            if top_pct <= 30:
+                tr, tg, tb = 34, 139, 34      # green
+            elif top_pct >= 60:
+                tr, tg, tb = 200, 60, 50      # red
             else:
-                pr, pg, pb = 200, 60, 50
-            pdf.set_fill_color(pr, pg, pb)
-            pdf.rect(bar_x, bar_y, (ppg_pct / 100.0) * bar_w, 1.5, "F")
+                tr, tg, tb = 120, 120, 120    # gray
+
+            # Draw: "FG 35%  ·  top 25%" with the top% part colored
+            fg_w = pdf.get_string_width(fg_text + "  ")
+            pdf.cell(fg_w, 3, fg_text + "  ")
+            pdf.set_font("Arial", "B", 6)
+            pdf.set_text_color(tr, tg, tb)
+            pdf.cell(sp_w - 2 - fg_w, 3, f"top {top_pct}%")
+        else:
+            pdf.cell(sp_w - 2, 3, fg_text, align="C")
 
         # 2x2 zone grid
         cm = shot_dist.get('close_m', 0)
