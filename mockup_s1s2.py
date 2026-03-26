@@ -203,7 +203,7 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
     pdf.cell(role_w, 5, role_line, align="R")
 
     # Stats row
-    stat_labels = ["MPG", "PPG", "FG%", "3P%", "FT%", "RPG", "APG", "TPG", "FPG"]
+    stat_labels = ["MPG", "PPG", "FG%", "3P%", "FT%", "RPG", "APG", "TOV", "PF"]
     stat_vals = [stats.get(k, "-") for k in ["mpg", "ppg", "fg", "3p", "ft", "rpg", "apg", "tpg", "fpg"]]
     col_w = cw / len(stat_labels)
     y_s = y_start + 10
@@ -243,7 +243,7 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
             pdf.rect(bar_x, bar_y, bar_w, bar_h, "F")
             # Percentile fill — color based on value
             # For TPG and FPG, lower is better (invert color)
-            invert = stat_labels[i] in ("TPG", "FPG")
+            invert = stat_labels[i] in ("TOV", "PF")
             display_pct = 100 - pct if invert else pct
             if display_pct >= 70:
                 pr, pg, pb = 0, 160, 60     # green
