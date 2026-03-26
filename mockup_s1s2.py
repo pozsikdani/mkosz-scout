@@ -366,8 +366,6 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
         grid_y = sp_y + 14
         cell_w = (sp_w - 3) / 2
         cell_h = (sp_h - 17) / 2
-        max_att = max(ca, ma, ta, fa, 1)
-
         for idx, (zlabel, made, att) in enumerate(zones_2x2):
             col = idx % 2
             row = idx // 2
@@ -383,10 +381,10 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
             pdf.set_xy(zx, zy)
             pdf.cell(cell_w, 3, zlabel, align="C")
 
-            # Mini bar — gray background, colored fill based on efficiency
+            # Mini bar — uniform height, gray bg, colored fill
             bar_w = cell_w * 0.8
             bar_x = zx + (cell_w - bar_w) / 2
-            bar_h = max((att / max_att) * 4, 1.5) if att > 0 else 0.5
+            bar_h = 2.5
             bar_top = zy + 3
 
             if att > 0:
