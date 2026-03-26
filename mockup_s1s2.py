@@ -176,37 +176,41 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
     elif pos == "4-5":
         pos_label_std = "PF"
 
-    # Draw position badge
+    # ── Layout: LEFT = non-scoring stats + note + tags, RIGHT = scoring panel ──
+    scoring_panel_w = 38 if shot_dist else 0
+    left_w = cw - scoring_panel_w - (2 if shot_dist else 0)
+
+    # Draw position badge (anchored to left_w area, not full cw)
     badge_color = pos_colors.get(pos_label_std, (120, 120, 120))
     if pos_label_std:
         badge_w = 10
         badge_h = 5.5
-        badge_x = cx + cw - badge_w
+        badge_x = cx + left_w - badge_w
         badge_y = y_start + 1.5
         pdf.set_fill_color(*badge_color)
         pdf.rect(badge_x, badge_y, badge_w, badge_h, "F")
-        # Round corners effect (small rects at corners) - skip for simplicity
         pdf.set_font("Arial", "B", 8)
         pdf.set_text_color(255, 255, 255)
         pdf.set_xy(badge_x, badge_y + 0.5)
         pdf.cell(badge_w, badge_h - 1, pos_label_std, align="C")
 
-    # Role + height below badge
+    # Role + height (fits within left_w)
     role_line = role
     if height:
         role_line = f"{height}cm | {role}"
-    role_x = cx + cw * 0.45
-    role_w = cw * 0.55 - (12 if pos_label_std else 0)
+    role_x = cx + left_w * 0.35
+    role_w = left_w * 0.65 - (12 if pos_label_std else 0)
     pdf.set_xy(role_x, y_start + 2)
     pdf.set_font("Arial", "I", 6.5)
     pdf.set_text_color(120, 120, 120)
     pdf.cell(role_w, 5, role_line, align="R")
 
-    # Stats row — compact: MPG, PPG, FG%, RPG, APG, TOV, PF
-    stat_labels = ["MPG", "PPG", "FG%", "RPG", "APG", "TOV", "PF"]
-    stat_keys =   ["mpg", "ppg", "fg",  "rpg", "apg", "tpg", "fpg"]
+    # --- LEFT SIDE: Non-scoring stats ---
+    stat_labels = ["MPG", "RPG", "APG", "TOV", "PF"]
+    stat_keys =   ["mpg", "rpg", "apg", "tpg", "fpg"]
     stat_vals = [stats.get(k, "-") for k in stat_keys]
-    col_w = cw / len(stat_labels)
+    stat_pct_keys = ["mpg", "rpg", "apg", "tpg", "fpg"]
+    col_w = left_w / len(stat_labels)
     y_s = y_start + 10
 
     pdf.set_font("Arial", "B", 6)
@@ -214,9 +218,6 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
     for i, lbl in enumerate(stat_labels):
         pdf.set_xy(cx + i * col_w, y_s)
         pdf.cell(col_w, 3.5, lbl, align="C")
-
-    # Stat key mapping for percentiles lookup
-    stat_pct_keys = ["mpg", "ppg", None, "rpg", "apg", "tpg", "fpg"]
 
     pdf.set_font("Arial", "B", 9)
     for i, val in enumerate(stat_vals):
@@ -230,111 +231,35 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
         pdf.set_text_color(200, 60, 60) if is_bad else pdf.set_text_color(30, 30, 30)
         pdf.cell(col_w, 5, str(val), align="C")
 
-        # Percentile mini bar under each stat value
+        # Percentile mini bar
         pct_key = stat_pct_keys[i]
         if percentiles and pct_key and pct_key in percentiles:
-            pct = percentiles[pct_key]
+            pctv = percentiles[pct_key]
             bar_w = col_w * 0.75
             bar_h = 1.5
             bar_x = cx + i * col_w + (col_w - bar_w) / 2
             bar_y = y_s + 8.5
-            # Background (gray track)
             pdf.set_fill_color(220, 220, 220)
             pdf.rect(bar_x, bar_y, bar_w, bar_h, "F")
-            # For TOV and PF, lower is better (invert color)
             invert = stat_labels[i] in ("TOV", "PF")
-            display_pct = 100 - pct if invert else pct
+            display_pct = 100 - pctv if invert else pctv
             if display_pct >= 70:
-                pr, pg, pb = 0, 160, 60     # green
+                pr, pg, pb = 0, 160, 60
             elif display_pct >= 40:
-                pr, pg, pb = 200, 160, 30   # yellow/amber
+                pr, pg, pb = 200, 160, 30
             else:
-                pr, pg, pb = 200, 60, 50    # red
-            fill_w = (pct / 100.0) * bar_w
+                pr, pg, pb = 200, 60, 50
+            fill_w = (pctv / 100.0) * bar_w
             pdf.set_fill_color(pr, pg, pb)
             pdf.rect(bar_x, bar_y, fill_w, bar_h, "F")
 
-    # Shot distribution — inline right after stats (before note)
-    sd_end_y = y_s + 11  # default if no shot dist
-
-    if shot_dist:
-        sd_y = y_s + 11  # right below stats
-
-        cm = shot_dist.get('close_m', 0)
-        ca = shot_dist.get('close_a', 0)
-        mm = shot_dist.get('mid_m', 0)
-        ma = shot_dist.get('mid_a', 0)
-        tm = shot_dist.get('three_m', 0)
-        ta = shot_dist.get('three_a', 0)
-        fm = shot_dist.get('ft_m', 0)
-        fa = shot_dist.get('ft_a', 0)
-
-        # Zone definitions: (label, made, att, color)
-        c_close = (41, 128, 185)    # blue
-        c_mid = (243, 156, 18)      # orange
-        c_three = (39, 174, 96)     # green
-        c_ft = (142, 68, 173)       # purple
-
-        zones = [
-            ("CLOSE", cm, ca, c_close),
-            ("MID", mm, ma, c_mid),
-            ("3PT", tm, ta, c_three),
-            ("FT", fm, fa, c_ft),
-        ]
-
-        col_w = cw / 4
-        bar_max_h = 5  # max bar height
-
-        # Find max attempts for relative bar sizing
-        max_att = max(ca, ma, ta, fa, 1)
-
-        for i, (zlabel, made, att, color) in enumerate(zones):
-            zx = cx + i * col_w
-            pct = round(made * 100.0 / att) if att > 0 else 0
-
-            # Zone label
-            pdf.set_font("Arial", "B", 5)
-            pdf.set_text_color(*color)
-            pdf.set_xy(zx, sd_y)
-            pdf.cell(col_w, 3, zlabel, align="C")
-
-            # Mini bar (height proportional to attempts volume, fill proportional to FG%)
-            bar_w = col_w * 0.7
-            bar_x = zx + (col_w - bar_w) / 2
-            bar_h = max((att / max_att) * bar_max_h, 1.5) if att > 0 else 0.5
-            bar_top = sd_y + 3.5
-
-            if att > 0:
-                # Background bar (full attempts = light)
-                pdf.set_fill_color(min(color[0]+100, 240), min(color[1]+100, 240), min(color[2]+100, 240))
-                pdf.rect(bar_x, bar_top, bar_w, bar_h, "F")
-                # Foreground (made portion = solid)
-                if made > 0:
-                    made_portion = (made / att) * bar_w
-                    pdf.set_fill_color(*color)
-                    pdf.rect(bar_x, bar_top, made_portion, bar_h, "F")
-
-            # Made/Att text
-            pdf.set_font("Arial", "B", 5.5)
-            pdf.set_text_color(50, 50, 50)
-            pdf.set_xy(zx, bar_top + bar_h + 0.5)
-            pdf.cell(col_w, 3, f"{made}/{att}" if att > 0 else "-", align="C")
-
-            # Percentage
-            pdf.set_font("Arial", "", 5)
-            pdf.set_text_color(100, 100, 100)
-            pdf.set_xy(zx, bar_top + bar_h + 3.5)
-            pdf.cell(col_w, 2.5, f"{pct}%" if att > 0 else "", align="C")
-
-        sd_end_y = sd_y + 14
-
-    # Note (after shot distribution or after stats)
-    pdf.set_xy(cx, sd_end_y)
+    # Note (left side, below stats)
+    pdf.set_xy(cx, y_s + 11)
     pdf.set_font("Arial", "I", 7)
     pdf.set_text_color(90, 90, 90)
-    pdf.multi_cell(cw, 3.5, note)
+    pdf.multi_cell(left_w, 3.5, note)
 
-    # Strength tags (colored pills)
+    # Strength tags (left side, bottom)
     if strengths:
         tag_y = y_start + card_h - 6
         tag_x = cx
@@ -347,6 +272,118 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
             pdf.set_xy(tag_x, tag_y + 0.3)
             pdf.cell(tw, 3.5, label, align="C")
             tag_x += tw + 1.5
+
+    # --- RIGHT SIDE: Scoring Panel (2x2 grid) ---
+    if shot_dist:
+        sp_x = cx + left_w + 2
+        sp_y = y_start + 2
+        sp_w = scoring_panel_w
+        sp_h = card_h - 4
+
+        # Panel background
+        pdf.set_fill_color(240, 240, 245)
+        pdf.rect(sp_x, sp_y, sp_w, sp_h, "F")
+        # Thin left border
+        pdf.set_fill_color(180, 30, 30)
+        pdf.rect(sp_x, sp_y, 0.5, sp_h, "F")
+
+        # Panel header: PPG + FG%
+        pdf.set_xy(sp_x + 1, sp_y + 1)
+        pdf.set_font("Arial", "B", 10)
+        pdf.set_text_color(30, 30, 30)
+        ppg_val = stats.get('ppg', '-')
+        pdf.cell(sp_w - 2, 5, f"{ppg_val} PPG", align="C")
+
+        fg_val = stats.get('fg', '-')
+        pdf.set_xy(sp_x + 1, sp_y + 5.5)
+        pdf.set_font("Arial", "", 6.5)
+        pdf.set_text_color(100, 100, 100)
+        pdf.cell(sp_w - 2, 3.5, f"FG {fg_val}%", align="C")
+
+        # PPG percentile bar
+        if percentiles and 'ppg' in percentiles:
+            ppg_pct = percentiles['ppg']
+            bar_w = sp_w * 0.7
+            bar_x = sp_x + (sp_w - bar_w) / 2
+            bar_y = sp_y + 9.5
+            pdf.set_fill_color(220, 220, 220)
+            pdf.rect(bar_x, bar_y, bar_w, 1.5, "F")
+            if ppg_pct >= 70:
+                pr, pg, pb = 0, 160, 60
+            elif ppg_pct >= 40:
+                pr, pg, pb = 200, 160, 30
+            else:
+                pr, pg, pb = 200, 60, 50
+            pdf.set_fill_color(pr, pg, pb)
+            pdf.rect(bar_x, bar_y, (ppg_pct / 100.0) * bar_w, 1.5, "F")
+
+        # 2x2 zone grid
+        cm = shot_dist.get('close_m', 0)
+        ca = shot_dist.get('close_a', 0)
+        mm = shot_dist.get('mid_m', 0)
+        ma = shot_dist.get('mid_a', 0)
+        tm = shot_dist.get('three_m', 0)
+        ta = shot_dist.get('three_a', 0)
+        fm = shot_dist.get('ft_m', 0)
+        fa = shot_dist.get('ft_a', 0)
+
+        c_close = (41, 128, 185)    # blue
+        c_mid = (243, 156, 18)      # orange
+        c_three = (39, 174, 96)     # green
+        c_ft = (142, 68, 173)       # purple
+
+        zones_2x2 = [
+            ("CLOSE", cm, ca, c_close),
+            ("MID", mm, ma, c_mid),
+            ("3PT", tm, ta, c_three),
+            ("FT", fm, fa, c_ft),
+        ]
+
+        grid_x = sp_x + 1.5
+        grid_y = sp_y + 12
+        cell_w = (sp_w - 3) / 2
+        cell_h = (sp_h - 15) / 2
+        max_att = max(ca, ma, ta, fa, 1)
+
+        for idx, (zlabel, made, att, color) in enumerate(zones_2x2):
+            col = idx % 2
+            row = idx // 2
+            zx = grid_x + col * cell_w
+            zy = grid_y + row * cell_h
+
+            zpct = round(made * 100.0 / att) if att > 0 else 0
+
+            # Zone label
+            pdf.set_font("Arial", "B", 5.5)
+            pdf.set_text_color(*color)
+            pdf.set_xy(zx, zy)
+            pdf.cell(cell_w, 3, zlabel, align="C")
+
+            # Mini bar
+            bar_w = cell_w * 0.8
+            bar_x = zx + (cell_w - bar_w) / 2
+            bar_h = max((att / max_att) * 4, 1.5) if att > 0 else 0.5
+            bar_top = zy + 3
+
+            if att > 0:
+                pdf.set_fill_color(min(color[0]+100, 240), min(color[1]+100, 240), min(color[2]+100, 240))
+                pdf.rect(bar_x, bar_top, bar_w, bar_h, "F")
+                if made > 0:
+                    made_w = (made / att) * bar_w
+                    pdf.set_fill_color(*color)
+                    pdf.rect(bar_x, bar_top, made_w, bar_h, "F")
+
+            # Made/Att
+            pdf.set_font("Arial", "B", 6)
+            pdf.set_text_color(50, 50, 50)
+            pdf.set_xy(zx, bar_top + bar_h + 0.5)
+            pdf.cell(cell_w, 3, f"{made}/{att}" if att > 0 else "-", align="C")
+
+            # Percentage
+            pdf.set_font("Arial", "", 5.5)
+            pdf.set_text_color(80, 80, 80)
+            pdf.set_xy(zx, bar_top + bar_h + 3.5)
+            pdf.cell(cell_w, 2.5, f"{zpct}%" if att > 0 else "", align="C")
 
     pdf.set_y(y_start + card_h + 2)
 
