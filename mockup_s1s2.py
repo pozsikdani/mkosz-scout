@@ -13,6 +13,43 @@ DB = "/Users/danipozsik/Desktop/claudecode/mkosz-stats/mkosz_stats.sqlite"
 PBP_DB = "/Users/danipozsik/Desktop/claudecode/mkosz-play-by-play/pbp.sqlite"
 FONT_DIR = "/System/Library/Fonts/Supplemental/"
 
+import tempfile
+from PIL import Image, ImageDraw
+from io import BytesIO
+
+
+def prepare_circular_photo(pic_url, size=200, border_color=(180, 30, 30), border_width=6):
+    """Download a photo and return a temp file path with circular crop + colored border.
+    Returns None if download or processing fails.
+    """
+    if not pic_url:
+        return None
+    try:
+        img_resp = requests.get(pic_url, timeout=5)
+        img = Image.open(BytesIO(img_resp.content)).convert("RGBA")
+        # Square crop from top (face is at the top of portrait photos)
+        w, h = img.size
+        side = min(w, h)
+        left = (w - side) // 2
+        img = img.crop((left, 0, left + side, side))
+        img = img.resize((size, size), Image.LANCZOS)
+        # Circular mask
+        mask = Image.new("L", (size, size), 0)
+        draw = ImageDraw.Draw(mask)
+        draw.ellipse((0, 0, size, size), fill=255)
+        # White background + paste with mask
+        bg = Image.new("RGBA", (size, size), (255, 255, 255, 255))
+        bg.paste(img, (0, 0), mask)
+        # Border ring
+        border_draw = ImageDraw.Draw(bg)
+        border_draw.ellipse((0, 0, size - 1, size - 1), outline=border_color, width=border_width)
+        # Save
+        tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+        bg.convert("RGB").save(tmp.name, "PNG")
+        return tmp.name
+    except Exception:
+        return None
+
 # Default team — can be overridden via CLI
 TEAM = "%Vasas%"
 COMP = "hun2a"
@@ -133,22 +170,14 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
     pdf.set_fill_color(180, 30, 30) if is_starter else pdf.set_fill_color(160, 160, 160)
     pdf.rect(x0, y_start, 2, card_h, "F")
 
-    # Photo (if available) — preserve original aspect ratio
+    # Photo (if available) — circular crop, square
     photo_w = 0
     if photo_path:
         import os
         if os.path.exists(photo_path):
-            from PIL import Image as PILImg
-            try:
-                with PILImg.open(photo_path) as pimg:
-                    orig_w, orig_h = pimg.size
-                ar = orig_w / orig_h  # original aspect ratio
-            except Exception:
-                ar = 0.7  # fallback
-            ph = card_h - 4  # photo height in mm
-            pw = ph * ar      # width preserving aspect ratio
-            pdf.image(photo_path, x0 + 4, y_start + 2, pw, ph)
-            photo_w = pw + 4
+            ph = card_h - 4  # photo size in mm (square)
+            pdf.image(photo_path, x0 + 4, y_start + 2, ph, ph)
+            photo_w = ph + 4
 
     # Content area starts after photo
     cx = x0 + 4 + photo_w
@@ -1989,34 +2018,9 @@ def main():
     for slot, name, jersey, pos_label, height, ppg, starter_note in projected_five:
         pic_url = roster_map.get(name, {}).get("pic_url", "")
         if pic_url:
-            try:
-                img_resp = requests.get(pic_url, timeout=5)
-                img = Image.open(BytesIO(img_resp.content)).convert("RGBA")
-                # Make square crop — take from the very top of the image
-                # Photos are portrait (77x110), face is in top portion
-                w, h = img.size
-                side = min(w, h)
-                left = (w - side) // 2
-                top = 0  # start from top to keep the head
-                img = img.crop((left, top, left + side, top + side))
-                # Resize to 200x200 for quality
-                img = img.resize((200, 200), Image.LANCZOS)
-                # Apply circular mask
-                mask = Image.new("L", (200, 200), 0)
-                draw = ImageDraw.Draw(mask)
-                draw.ellipse((0, 0, 200, 200), fill=255)
-                # White background
-                bg = Image.new("RGBA", (200, 200), (255, 255, 255, 255))
-                bg.paste(img, (0, 0), mask)
-                # Add red border ring
-                border_draw = ImageDraw.Draw(bg)
-                border_draw.ellipse((0, 0, 199, 199), outline=(180, 30, 30), width=6)
-                # Save as PNG temp file
-                tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-                bg.convert("RGB").save(tmp.name, "PNG")
-                player_photo_paths[name] = tmp.name
-            except Exception as e:
-                print(f"  Photo failed for {name}: {e}")
+            path = prepare_circular_photo(pic_url)
+            if path:
+                player_photo_paths[name] = path
 
     # Draw player markers
     for slot, name, jersey, pos_label, height, ppg, starter_note in projected_five:
@@ -2133,34 +2137,14 @@ def main():
                 break
         backup_map[starter_name] = backups
 
-    # Download backup player photos too
+    # Download backup player photos too (gray border)
     for _, starter_name, *_ in projected_five:
         for bname, bjersey, bheight, cnt in backup_map.get(starter_name, []):
             if bname not in player_photo_paths:
                 pic_url = roster_map.get(bname, {}).get("pic_url", "")
-                if pic_url:
-                    try:
-                        img_resp = requests.get(pic_url, timeout=5)
-                        img = Image.open(BytesIO(img_resp.content)).convert("RGBA")
-                        w, h = img.size
-                        side = min(w, h)
-                        left = (w - side) // 2
-                        top = 0
-                        img = img.crop((left, top, left + side, top + side))
-                        img = img.resize((200, 200), Image.LANCZOS)
-                        mask = Image.new("L", (200, 200), 0)
-                        draw = ImageDraw.Draw(mask)
-                        draw.ellipse((0, 0, 200, 200), fill=255)
-                        bg = Image.new("RGBA", (200, 200), (255, 255, 255, 255))
-                        bg.paste(img, (0, 0), mask)
-                        # Gray border for bench players
-                        border_draw = ImageDraw.Draw(bg)
-                        border_draw.ellipse((0, 0, 199, 199), outline=(130, 130, 130), width=6)
-                        tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-                        bg.convert("RGB").save(tmp.name, "PNG")
-                        player_photo_paths[bname] = tmp.name
-                    except Exception:
-                        pass
+                path = prepare_circular_photo(pic_url, border_color=(130, 130, 130))
+                if path:
+                    player_photo_paths[bname] = path
 
     # Draw backup markers inline under each starter (up to 2 per starter)
     # Sizes: 1st backup = 5.5mm radius, 2nd backup = 4mm radius
@@ -3047,23 +3031,16 @@ def main():
 
     print(f"  Player cards: {len(starters)} starters, {len(rotation)} rotation, {len(bench)} bench")
 
-    # Download photos for all player card players (reuse existing + fetch missing)
+    # Download photos for all player card players (circular crop, reuse existing)
     all_card_names = [n for _, n, *_ in starters] + \
                      [n for _, n, *_ in rotation] + \
                      [n for _, n, *_ in bench]
     for pname in all_card_names:
         if pname not in player_photo_paths:
             pic_url = roster_map.get(pname, {}).get("pic_url", "")
-            if pic_url:
-                try:
-                    img_resp = requests.get(pic_url, timeout=5)
-                    img = Image.open(BytesIO(img_resp.content)).convert("RGBA")
-                    # Keep original size for card (aspect ratio preserved in player_card)
-                    tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-                    img.convert("RGB").save(tmp.name, "PNG")
-                    player_photo_paths[pname] = tmp.name
-                except Exception:
-                    pass
+            path = prepare_circular_photo(pic_url)
+            if path:
+                player_photo_paths[pname] = path
 
     for jersey, name, role, stats, note in starters:
         r = roster_map.get(name, {})
