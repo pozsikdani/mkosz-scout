@@ -14,7 +14,7 @@
 | League | Primary Source | Data Available |
 |--------|---------------|----------------|
 | **NB1** | PBP (`pbp.sqlite`) | Full stats: scoring, shot zones, rebounds, assists, steals, blocks, turnovers, substitutions, playing time, fouls |
-| **NB2** | PDF (`nb2_full.sqlite`) | Scoring (made only), FT attempts, fouls (detailed), timeouts, quarter scores, starters, jersey/license numbers |
+| **NB2** | PDF (`scoresheet.sqlite`) | Scoring (made only), FT attempts, fouls (detailed), timeouts, quarter scores, starters, jersey/license numbers |
 | **MEFOB** | PBP → PDF converter (`pbp_to_scoresheet.py`) | Same as NB1 in source; same as NB2 after conversion (scoring, FT, fouls, starters) |
 
 ### Data availability tags

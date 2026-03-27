@@ -4,7 +4,7 @@
 > Last updated: 2026-03-21.
 
 ## Legend
-- **PDF** = Scoresheet PDF extractor (`extract_scoresheet.py` → `nb2_full.sqlite`)
+- **PDF** = Scoresheet PDF extractor (`extract_scoresheet.py` → `scoresheet.sqlite`)
 - **PBP** = Play-by-play HTML scraper (`parse_pbp.py` → `pbp.sqlite`)
 - **WEB** = Web scraper (`mkosz_scraper` → `mkosz_basketball.db`)
 - **SHOT** = Shot chart API (`mkosz.hu/ajax/film.php` → `shots` table in `mkosz_stats.sqlite`)

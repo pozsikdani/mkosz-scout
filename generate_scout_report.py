@@ -4,7 +4,7 @@
 import sqlite3
 from fpdf import FPDF
 
-DB = "/Users/laczkopeter1/MKOSZ/mkosz-scoresheet/nb2_full.sqlite"
+DB = "/Users/laczkopeter1/MKOSZ/mkosz-scoresheet/scoresheet.sqlite"
 OUTPUT = "/Users/laczkopeter1/MKOSZ/scout_report_kozgaz_b.pdf"
 KG = "%KÖZGÁZ%DSK/B%"
 CUTOFF = "2026-03-03"  # Exclude the FKE SAS match on this date
