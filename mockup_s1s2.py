@@ -2968,6 +2968,20 @@ def main():
         if pname not in starter_names and pstats.get('gp', 0) >= 5:
             bench_players_set.add(pname)
 
+    # Filter out players NOT on the current MKOSZ roster (transferred away)
+    if roster_map:
+        removed = set()
+        for pname in bench_players_set:
+            if pname not in roster_map and pname not in starter_names:
+                removed.add(pname)
+        if removed:
+            print(f"  Filtered out {len(removed)} players not on current roster: {', '.join(sorted(removed))}")
+            bench_players_set -= removed
+        # Also filter starters — warn if a starter is not on the roster
+        for sname in list(starter_names):
+            if sname not in roster_map:
+                print(f"  Warning: starter {sname} not on current MKOSZ roster!")
+
     # Classify: ROTATION (played 4+ of last 8 games or MPG >= 10) vs BENCH
     rotation_players = []
     bench_only_players = []
