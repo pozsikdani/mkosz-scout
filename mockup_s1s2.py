@@ -3031,21 +3031,21 @@ def main():
 
     print(f"  Player cards: {len(starters)} starters, {len(rotation)} rotation, {len(bench)} bench")
 
-    # Download photos for all player card players (circular crop, reuse existing)
+    # Download photos for all player card players (always red border, overwrite gray ones)
+    card_photo_paths = {}  # separate dict — always red border for cards
     all_card_names = [n for _, n, *_ in starters] + \
                      [n for _, n, *_ in rotation] + \
                      [n for _, n, *_ in bench]
     for pname in all_card_names:
-        if pname not in player_photo_paths:
-            pic_url = roster_map.get(pname, {}).get("pic_url", "")
-            path = prepare_circular_photo(pic_url)
-            if path:
-                player_photo_paths[pname] = path
+        pic_url = roster_map.get(pname, {}).get("pic_url", "")
+        path = prepare_circular_photo(pic_url, border_color=(180, 30, 30))
+        if path:
+            card_photo_paths[pname] = path
 
     for jersey, name, role, stats, note in starters:
         r = roster_map.get(name, {})
         player_card(pdf, name, jersey, role, stats, note, is_starter=True,
-                    photo_path=player_photo_paths.get(name),
+                    photo_path=card_photo_paths.get(name),
                     height=r.get("height"), pos=r.get("pos"),
                     strengths=player_strengths.get(name),
                     player_zones=player_subzones.get(name),
@@ -3061,7 +3061,7 @@ def main():
     for jersey, name, role, stats, note in rotation:
         r = roster_map.get(name, {})
         player_card(pdf, name, jersey, role, stats, note, is_starter=False,
-                    photo_path=player_photo_paths.get(name),
+                    photo_path=card_photo_paths.get(name),
                     height=r.get("height"), pos=r.get("pos"),
                     strengths=player_strengths.get(name),
                     player_zones=player_subzones.get(name),
@@ -3077,7 +3077,7 @@ def main():
     for jersey, name, role, stats, note in bench:
         r = roster_map.get(name, {})
         player_card(pdf, name, jersey, role, stats, note, is_starter=False,
-                    photo_path=player_photo_paths.get(name),
+                    photo_path=card_photo_paths.get(name),
                     height=r.get("height"), pos=r.get("pos"),
                     strengths=player_strengths.get(name),
                     player_zones=player_subzones.get(name),
