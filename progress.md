@@ -4,7 +4,7 @@
 Általános, bármely NB1B csapatra futtatható scout report PDF generátor. A report célja: felkészülés egy adott ellenfélre — rotáció, játékosprofil, dobási szokások, erősségek/gyengeségek.
 
 ## Hol tartunk
-**Section 1 (Team Overview)** és **Section 2 (Rotation & Personnel)** kész, mind a 14 NB1B Piros csapatra generálható.
+**Section 1 (Team Overview)**, **Section 2 (Rotation & Personnel)** és **Section 3 (Head-to-Head)** kész, mind a 14 NB1B Piros csapatra generálható. Section 3 opcionális (`--vs` flag).
 
 ### Kész funkciók
 
@@ -24,10 +24,20 @@
   - Scoring panel: PPG + FG% "top X%" badge-dzsel (zöld/szürke/piros), mini félpálya zóna heatmap (9 zóna), FT sor
   - Scout note + strength tagek (auto-generált)
 
+**Section 3: Head-to-Head Analysis** (opcionális, `--vs` flag)
+- 3.1 Match History — H2H mérleg, meccs táblázat negyedenkénti bontással (zöld/piros per-negyed háttér)
+- 3.2 Quarter-by-Quarter Breakdown — színezett margin tábla (sorok=meccsek, oszlopok=Q1-Q4+Total, AVG sor)
+- 3.3 Quarter Lineup Analysis — saját + ellenfél lineup-ok negyedenként margin-nal, best/worst/toughest summary
+- 3.4 Score Flow — futó pontkülönbség vonaldiagram, scoring run annotációk
+- 3.5 Player Performance in H2H — box score mindkét csapat játékosaira a H2H meccsekből
+- 3.6 H2H Shot Chart — zóna breakdown tábla hot/cold zone elemzéssel
+
 ### Infrastruktúra
-- Egyetlen fájl: `mockup_s1s2.py` (~3100 sor)
+- Egyetlen fájl: `mockup_s1s2.py` (~4200 sor)
 - CLI: `python3 mockup_s1s2.py <csapatnév>` → `scout_{slug}.pdf`
-- 4 adatforrás: mkosz_stats.sqlite (shotchart), pbp.sqlite (PBP events/subs), mkosz.hu standings (élő tabella/roster/fotók), mkosz.hu bajnoksag-musor (meccs eredmények scrape)
+- CLI H2H: `python3 mockup_s1s2.py <csapatnév> --vs <ellenfél>` → `scout_{slug}_vs_{vs-slug}.pdf`
+- 3 adatforrás: mkosz_stats.sqlite (shotchart + PBP events/subs), mkosz.hu standings (élő tabella/roster/fotók), mkosz.hu bajnoksag-musor (meccs eredmények scrape)
+- **Egyetlen DB**: pbp.sqlite dependency eltávolítva, minden adat mkosz_stats.sqlite-ból jön
 - Fuzzy name matching az MKOSZ roster és PBP nevek között (encoding különbségek kezelése: ő/õ/?)
 - Encoding dedup: Pleesz Gergő/Gergõ/Gerg? variánsok összevonása
 - Roster filter: csak az aktuális MKOSZ keretben lévő játékosok jelennek meg
