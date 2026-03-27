@@ -329,21 +329,24 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
         half_w = (sp_w - 2) / 2
 
         def _top_badge(pdf, val_text, val_font_size, pct_key, bx, by, bw):
-            """Draw value + colored top% badge below it."""
+            """Draw value + colored top% badge below it.
+            pctv = percentile (0-100), meaning X% of league is BELOW this player.
+            Higher pctv = better. top_pct = 100-pctv = what % of league is ABOVE.
+            """
             pdf.set_xy(bx, by)
             pdf.set_font("Arial", "B", val_font_size)
             pdf.set_text_color(30, 30, 30)
             pdf.cell(bw, 4.5, val_text, align="C")
             if percentiles and pct_key in percentiles:
-                pctv = percentiles[pct_key]
-                top_pct = 100 - pctv
-                if top_pct <= 30:
-                    cr, cg, cb = 34, 139, 34
-                elif top_pct >= 60:
-                    cr, cg, cb = 200, 60, 50
+                pctv = percentiles[pct_key]  # 0-100, higher = better
+                # Color based on pctv directly (higher = greener)
+                if pctv >= 70:
+                    cr, cg, cb = 34, 139, 34    # green — top quartile
+                elif pctv <= 30:
+                    cr, cg, cb = 200, 60, 50    # red — bottom quartile
                 else:
-                    cr, cg, cb = 140, 140, 140
-                badge_text = f"top {top_pct}%"
+                    cr, cg, cb = 140, 140, 140  # gray — middle
+                badge_text = f"top {100 - pctv}%"
                 pdf.set_font("Arial", "B", 5)
                 btw = pdf.get_string_width(badge_text) + 2.5
                 bth = 3
@@ -1674,12 +1677,21 @@ def main():
     # Smart roster lookup with encoding-tolerant fuzzy matching
     import unicodedata
     def _norm_name(n):
-        """Normalize name for matching: strip accents, lowercase, remove non-alpha."""
-        # Replace common encoding artifacts
-        n = n.replace("?", "").replace("õ", "ő").replace("û", "ű")
-        # NFD decompose then strip combining marks
+        """Normalize name for matching: strip accents, lowercase, remove non-alpha.
+        ? is treated as a single unknown char (common encoding artifact for ő, ű, etc.)
+        """
+        # Replace known encoding artifacts first
+        n = n.replace("õ", "o").replace("û", "u").replace("ő", "o").replace("ű", "u")
+        n = n.replace("ö", "o").replace("ü", "u").replace("á", "a").replace("é", "e")
+        n = n.replace("í", "i").replace("ó", "o").replace("ú", "u")
+        n = n.replace("Õ", "O").replace("Û", "U").replace("Ő", "O").replace("Ű", "U")
+        n = n.replace("Ö", "O").replace("Ü", "U").replace("Á", "A").replace("É", "E")
+        n = n.replace("Í", "I").replace("Ó", "O").replace("Ú", "U")
+        # NFD decompose then strip combining marks → pure ASCII
         nfkd = unicodedata.normalize("NFKD", n)
         ascii_str = "".join(c for c in nfkd if not unicodedata.combining(c))
+        # Replace ? with empty (unknown char from encoding)
+        ascii_str = ascii_str.replace("?", "")
         return ascii_str.lower().strip()
 
     # Build normalized lookup index
@@ -2727,6 +2739,43 @@ def main():
                 "oreb_total": row[19], "dreb_total": row[20],
             }
         pfs_conn.close()
+
+        # Deduplicate encoding variants (e.g., "Pleesz Gergõ" vs "Pleesz Gerg?")
+        # Use substring matching on normalized names to catch ?-truncated variants
+        names = list(player_full_stats.keys())
+        to_remove = []
+        already_merged = set()
+        for i, name_a in enumerate(names):
+            if name_a in already_merged:
+                continue
+            na = _norm_name(name_a)
+            for j, name_b in enumerate(names):
+                if j <= i or name_b in already_merged:
+                    continue
+                nb = _norm_name(name_b)
+                # Match if one is substring of the other (catches ?-truncation)
+                if na in nb or nb in na or na == nb:
+                    # Keep the one on the roster, or the one with more GP
+                    a_on_roster = name_a in roster_map
+                    b_on_roster = name_b in roster_map
+                    if b_on_roster and not a_on_roster:
+                        to_remove.append(name_a)
+                        already_merged.add(name_a)
+                    elif a_on_roster and not b_on_roster:
+                        to_remove.append(name_b)
+                        already_merged.add(name_b)
+                    elif player_full_stats[name_a].get('gp', 0) >= player_full_stats[name_b].get('gp', 0):
+                        to_remove.append(name_b)
+                        already_merged.add(name_b)
+                    else:
+                        to_remove.append(name_a)
+                        already_merged.add(name_a)
+        for dup in to_remove:
+            if dup in player_full_stats:
+                del player_full_stats[dup]
+        if to_remove:
+            print(f"  Deduplicated {len(to_remove)} encoding variants: {', '.join(to_remove)}")
+
         print(f"  Computed full stats for {len(player_full_stats)} {TEAM.strip('%')} players")
     except Exception as e:
         print(f"  Full player stats query failed: {e}")
@@ -2914,7 +2963,8 @@ def main():
 
     def _build_card_stats(name, pstats):
         """Build stats dict for player_card from full stats."""
-        mpg = str(player_mpg_map.get(name, {}).get("mpg", "0"))
+        mpg_val = player_mpg_map.get(name, {}).get("mpg", 0)
+        mpg = str(int(mpg_val)) if mpg_val > 0 else "-"
         if not pstats:
             return {"mpg": mpg, "ppg": "0", "fg": "0", "3p": "-", "ft": "-",
                     "rpg": "0", "apg": "0", "tpg": "0", "fpg": "0"}
