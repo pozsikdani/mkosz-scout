@@ -42,13 +42,14 @@ Output: `scout_{team-slug}.pdf`
 ## Key Technical Details
 
 ### Data Sources
-- **Standings**: scraped from `mkosz.hu/bajnoksag/x2526/hun2a`
+- **Standings + Record**: scraped from `mkosz.hu/bajnoksag/x2526/hun2a` — **authoritative source** for W-L record, home/away record, streak. The standings table is always correct even when DB data lags behind.
+- **Match results (scores)**: scraped from `mkosz.hu/bajnoksag-musor/x2526/hun2a/phase/0/csapat/{team_id}` — **authoritative source** for per-game scores used in margin trend, PPG/OPPG, Last 5. Team ID extracted from standings team URL. Falls back to DB if scrape fails.
 - **Roster** (height, position, photos): scraped from team page URL found in standings (e.g., `mkosz.hu/csapat/x2526/hun2a/9233/vasas-akademia`)
-- **Match data**: `mkosz_stats.sqlite` matches table (team_a_name, team_b_name, score_a, score_b, etc.)
 - **Shot charts**: `mkosz_stats.sqlite` shots table (hx, hy, is_successfull, player_name, team_id)
 - **PBP events**: `pbp.sqlite` events table (20 event types: CLOSE_MADE/MISS, THREE_MADE/MISS, AST, DREB, OREB, STL, BLK, TOV, FOUL, etc.)
 - **Substitutions**: `pbp.sqlite` substitutions table → used for starter detection, MPG estimation, rotation patterns, lineup tracking
 - **FT enrichment**: FT data comes from PBP events (not shotchart API, which undercounts FTs)
+- **DB matches** (`mkosz_stats.sqlite`): used as fallback for match results if MKOSZ scraping fails, and for quarter scores (not available from scrape)
 
 ### Starter Detection (last 8 games)
 - From substitutions: players subbed OUT before being subbed IN = starters

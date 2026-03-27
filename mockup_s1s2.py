@@ -2,6 +2,7 @@
 """Mockup of §1 + §2 together for visual review."""
 
 import json
+import re
 import sqlite3
 import requests
 from bs4 import BeautifulSoup
@@ -16,6 +17,83 @@ FONT_DIR = "/System/Library/Fonts/Supplemental/"
 import tempfile
 from PIL import Image, ImageDraw
 from io import BytesIO
+
+
+HU_MONTHS = {
+    "január": 1, "február": 2, "március": 3, "április": 4,
+    "május": 5, "június": 6, "július": 7, "augusztus": 8,
+    "szeptember": 9, "október": 10, "november": 11, "december": 12,
+}
+
+
+def _parse_hu_date(s):
+    """Parse '2025. október 7.' → '2025-10-07'."""
+    m = re.match(r'(\d{4})\.\s*(\S+)\s+(\d{1,2})\.?', s.strip())
+    if not m:
+        return None
+    year, month_str, day = m.group(1), m.group(2).rstrip("."), m.group(3)
+    month = HU_MONTHS.get(month_str.lower())
+    if not month:
+        return None
+    return f"{year}-{month:02d}-{int(day):02d}"
+
+
+def scrape_mkosz_results(season, comp, team_id, our_name):
+    """Scrape match results from mkosz.hu bajnoksag-musor page.
+    Returns list of dicts with date, home_team, away_team, home_score, away_score, is_home, played."""
+    url = f"https://mkosz.hu/bajnoksag-musor/{season}/{comp}/phase/0/csapat/{team_id}"
+    try:
+        resp = requests.get(url, timeout=15,
+                            headers={"User-Agent": "Mozilla/5.0 mkosz-scout"})
+        html = resp.content.decode("utf-8", errors="replace")
+    except Exception as e:
+        print(f"  Warning: Could not scrape results from mkosz.hu: {e}")
+        return None
+
+    matches = []
+    trs = re.findall(r'<tr[^>]*>(.*?)</tr>', html, re.DOTALL)
+    for tr in trs:
+        tds = re.findall(r'<td[^>]*>(.*?)</td>', tr, re.DOTALL)
+        if len(tds) != 6:
+            continue
+
+        teams = re.findall(r'title="([^"]+)"', tds[0] + tds[1])
+        if len(teams) != 2:
+            continue
+        home_team, away_team = teams[0], teams[1]
+
+        date_m = re.search(r'<b>(.*?)</b>', tds[2])
+        if not date_m:
+            continue
+        date_str = _parse_hu_date(date_m.group(1))
+        if not date_str:
+            continue
+
+        score_m = re.search(r'(\d+)\s*-\s*(\d+)', tds[4])
+        if score_m:
+            home_score = int(score_m.group(1))
+            away_score = int(score_m.group(2))
+            played = not (home_score == 0 and away_score == 0)
+        else:
+            home_score = away_score = 0
+            played = False
+
+        if not played:
+            continue
+
+        # Determine home/away for our team
+        is_home = our_name and our_name[:10].upper() in home_team.upper()
+
+        matches.append({
+            "date": date_str,
+            "home_team": home_team,
+            "away_team": away_team,
+            "home_score": home_score,
+            "away_score": away_score,
+            "is_home": is_home,
+        })
+
+    return matches if matches else None
 
 
 def prepare_circular_photo(pic_url, size=200, border_color=(180, 30, 30), border_width=6):
@@ -729,56 +807,109 @@ def main():
         our_name = m["team_a_name"] if s == "A" else m["team_b_name"]
         break
 
-    our_pos = next((s["rank"] for s in standings if TEAM.strip("%") in s["team"]), "?")
-    our_rec = team_records.get(our_name, {"w": 0, "l": 0})
+    our_standing = next((s for s in standings if TEAM.strip("%") in s["team"]), None)
+    our_pos = our_standing["rank"] if our_standing else "?"
 
-    # Record calcs
-    wins = losses = home_w = home_l = away_w = away_l = 0
-    for m in matches:
-        s = team_side(m, TEAM)
-        if scored(m, s) > allowed(m, s):
-            wins += 1
-            if s == "A": home_w += 1
-            else: away_w += 1
-        else:
-            losses += 1
-            if s == "A": home_l += 1
-            else: away_l += 1
+    # Record from standings (authoritative source)
+    def _parse_rec(rec_str):
+        parts = rec_str.split("-") if rec_str else []
+        if len(parts) == 2 and parts[0].strip().isdigit() and parts[1].strip().isdigit():
+            return int(parts[0].strip()), int(parts[1].strip())
+        return 0, 0
 
-    n = len(matches) or 1
-    ppg = sum(scored(m, team_side(m, TEAM)) for m in matches) / n
-    papg = sum(allowed(m, team_side(m, TEAM)) for m in matches) / n
+    if our_standing:
+        wins = our_standing["w"]
+        losses = our_standing["l"]
+        home_w, home_l = _parse_rec(our_standing.get("home", ""))
+        away_w, away_l = _parse_rec(our_standing.get("away", ""))
+    else:
+        wins = losses = home_w = home_l = away_w = away_l = 0
+        for m in matches:
+            s = team_side(m, TEAM)
+            if scored(m, s) > allowed(m, s):
+                wins += 1
+                if s == "A": home_w += 1
+                else: away_w += 1
+            else:
+                losses += 1
+                if s == "A": home_l += 1
+                else: away_l += 1
 
-    # Home/Away PPG splits
-    home_matches = [m for m in matches if team_side(m, TEAM) == "A"]
-    away_matches = [m for m in matches if team_side(m, TEAM) == "B"]
-    h_n = len(home_matches) or 1
-    a_n = len(away_matches) or 1
-    h_ppg = sum(scored(m, "A") for m in home_matches) / h_n
-    h_papg = sum(allowed(m, "A") for m in home_matches) / h_n
-    a_ppg = sum(scored(m, "B") for m in away_matches) / a_n
-    a_papg = sum(allowed(m, "B") for m in away_matches) / a_n
+    # Scrape match results from mkosz.hu (authoritative source for margin trend, PPG, etc.)
+    mkosz_results = None
+    if our_standing and our_standing.get("team_url"):
+        # Extract team_id from URL like /csapat/x2526/hun2a/9233/vasas-akademia
+        _tid_m = re.search(r'/(\d{4,5})/', our_standing["team_url"])
+        if _tid_m:
+            mkosz_team_id = _tid_m.group(1)
+            mkosz_results = scrape_mkosz_results("x2526", COMP, mkosz_team_id, our_name)
+            if mkosz_results:
+                print(f"  Scraped {len(mkosz_results)} match results from mkosz.hu")
 
-    # Streak
-    streak_type = scored(matches[-1], team_side(matches[-1], TEAM)) > allowed(matches[-1], team_side(matches[-1], TEAM))
-    streak_ct = 0
-    for m in reversed(matches):
-        s = team_side(m, TEAM)
-        if (scored(m, s) > allowed(m, s)) == streak_type:
-            streak_ct += 1
-        else:
-            break
+    # Use mkosz results for PPG/margin calculations if available, otherwise fall back to DB
+    if mkosz_results:
+        _mr_n = len(mkosz_results) or 1
+        _mr_home = [m for m in mkosz_results if m["is_home"]]
+        _mr_away = [m for m in mkosz_results if not m["is_home"]]
+
+        def _mr_scored(m):
+            return m["home_score"] if m["is_home"] else m["away_score"]
+        def _mr_allowed(m):
+            return m["away_score"] if m["is_home"] else m["home_score"]
+
+        ppg = sum(_mr_scored(m) for m in mkosz_results) / _mr_n
+        papg = sum(_mr_allowed(m) for m in mkosz_results) / _mr_n
+
+        h_n = len(_mr_home) or 1
+        a_n = len(_mr_away) or 1
+        h_ppg = sum(m["home_score"] for m in _mr_home) / h_n
+        h_papg = sum(m["away_score"] for m in _mr_home) / h_n
+        a_ppg = sum(m["away_score"] for m in _mr_away) / a_n
+        a_papg = sum(m["home_score"] for m in _mr_away) / a_n
+    else:
+        n = len(matches) or 1
+        ppg = sum(scored(m, team_side(m, TEAM)) for m in matches) / n
+        papg = sum(allowed(m, team_side(m, TEAM)) for m in matches) / n
+
+        home_matches = [m for m in matches if team_side(m, TEAM) == "A"]
+        away_matches = [m for m in matches if team_side(m, TEAM) == "B"]
+        h_n = len(home_matches) or 1
+        a_n = len(away_matches) or 1
+        h_ppg = sum(scored(m, "A") for m in home_matches) / h_n
+        h_papg = sum(allowed(m, "A") for m in home_matches) / h_n
+        a_ppg = sum(scored(m, "B") for m in away_matches) / a_n
+        a_papg = sum(allowed(m, "B") for m in away_matches) / a_n
+
+    # Streak — prefer standings data (e.g. "W3", "L2")
+    if our_standing and our_standing.get("streak"):
+        _sk = our_standing["streak"]
+        streak_type = _sk.startswith("W")
+        streak_ct = int("".join(c for c in _sk if c.isdigit()) or "0")
+    else:
+        streak_type = scored(matches[-1], team_side(matches[-1], TEAM)) > allowed(matches[-1], team_side(matches[-1], TEAM))
+        streak_ct = 0
+        for m in reversed(matches):
+            s = team_side(m, TEAM)
+            if (scored(m, s) > allowed(m, s)) == streak_type:
+                streak_ct += 1
+            else:
+                break
 
     # Last 5
-    last5 = list(reversed(matches))[:5]
-    l5_w = sum(1 for m in last5 if scored(m, team_side(m, TEAM)) > allowed(m, team_side(m, TEAM)))
-    l5_ppg = sum(scored(m, team_side(m, TEAM)) for m in last5) / len(last5)
-    l5_papg = sum(allowed(m, team_side(m, TEAM)) for m in last5) / len(last5)
+    if mkosz_results:
+        _mr_last5 = list(reversed(mkosz_results))[:5]
+        l5_w = sum(1 for m in _mr_last5 if _mr_scored(m) > _mr_allowed(m))
+        l5_ppg = sum(_mr_scored(m) for m in _mr_last5) / len(_mr_last5)
+        l5_papg = sum(_mr_allowed(m) for m in _mr_last5) / len(_mr_last5)
+        l5_margins = [_mr_scored(m) - _mr_allowed(m) for m in _mr_last5]
+    else:
+        last5 = list(reversed(matches))[:5]
+        l5_w = sum(1 for m in last5 if scored(m, team_side(m, TEAM)) > allowed(m, team_side(m, TEAM)))
+        l5_ppg = sum(scored(m, team_side(m, TEAM)) for m in last5) / len(last5)
+        l5_papg = sum(allowed(m, team_side(m, TEAM)) for m in last5) / len(last5)
+        l5_margins = [scored(m, team_side(m, TEAM)) - allowed(m, team_side(m, TEAM)) for m in last5]
 
-    # Last 5 margin trend
-    l5_margins = [scored(m, team_side(m, TEAM)) - allowed(m, team_side(m, TEAM)) for m in last5]
-
-    # Quarter averages
+    # Quarter averages (DB only — mkosz results don't have quarter scores)
     q_sums = {q: [0, 0, 0] for q in range(1, 5)}
     for m in matches:
         qs_raw = m.get("quarter_scores") or "[]"
@@ -798,17 +929,32 @@ def main():
 
     # Record vs .500+ and .500- teams
     above_w = above_l = below_w = below_l = 0
-    for m in matches:
-        s = team_side(m, TEAM)
-        opp = canonical_name(opp_name(m, s))
-        opp_rec = team_records.get(opp, {"w": 0, "l": 0})
-        opp_total = opp_rec["w"] + opp_rec["l"]
-        opp_wpct = opp_rec["w"] / opp_total if opp_total else 0
-        if scored(m, s) > allowed(m, s):
-            if opp_wpct >= 0.5:
-                above_w += 1
+    _vs500_src = mkosz_results if mkosz_results else None
+    if _vs500_src:
+        for m in _vs500_src:
+            opp = m["away_team"] if m["is_home"] else m["home_team"]
+            opp = canonical_name(opp)
+            opp_rec = team_records.get(opp, {"w": 0, "l": 0})
+            opp_total = opp_rec["w"] + opp_rec["l"]
+            opp_wpct = opp_rec["w"] / opp_total if opp_total else 0
+            if _mr_scored(m) > _mr_allowed(m):
+                if opp_wpct >= 0.5: above_w += 1
+                else: below_w += 1
             else:
-                below_w += 1
+                if opp_wpct >= 0.5: above_l += 1
+                else: below_l += 1
+    else:
+        for m in matches:
+            s = team_side(m, TEAM)
+            opp = canonical_name(opp_name(m, s))
+            opp_rec = team_records.get(opp, {"w": 0, "l": 0})
+            opp_total = opp_rec["w"] + opp_rec["l"]
+            opp_wpct = opp_rec["w"] / opp_total if opp_total else 0
+            if scored(m, s) > allowed(m, s):
+                if opp_wpct >= 0.5:
+                    above_w += 1
+                else:
+                    below_w += 1
         else:
             if opp_wpct >= 0.5:
                 above_l += 1
@@ -973,40 +1119,56 @@ def main():
     is_upset = []
     is_home = []
 
-    for idx, m in enumerate(matches):
-        s = team_side(m, TEAM)
-        margin = scored(m, s) - allowed(m, s)
-        all_margins.append(margin)
-        is_home.append(s == "A")  # team_a = home
+    # Use mkosz results as source if available, fall back to DB matches
+    if mkosz_results:
+        _margin_src = mkosz_results
+        for idx, m in enumerate(_margin_src):
+            margin = _mr_scored(m) - _mr_allowed(m)
+            all_margins.append(margin)
+            is_home.append(m["is_home"])
 
-        # Build standings from all comp matches BEFORE this match date
-        pre_records = {}
-        for pm in all_matches:
-            if pm["match_date"] and m["match_date"] and pm["match_date"] < m["match_date"]:
-                for side in ["a", "b"]:
-                    opp_side = "b" if side == "a" else "a"
-                    tn = canonical_name(pm[f"team_{side}_name"])
-                    if tn not in pre_records:
-                        pre_records[tn] = {"w": 0, "l": 0}
-                    if pm[f"score_{side}"] > pm[f"score_{opp_side}"]:
-                        pre_records[tn]["w"] += 1
-                    else:
-                        pre_records[tn]["l"] += 1
+            # Upset detection: use current standings rank diff (simplified)
+            opp = m["away_team"] if m["is_home"] else m["home_team"]
+            opp_cn = canonical_name(opp)
+            our_cn = canonical_name(our_name) if our_name else ""
+            our_r = next((int(s["rank"]) for s in standings if our_cn and our_cn[:12] in s["team"]), 7)
+            opp_r = next((int(s["rank"]) for s in standings if opp_cn[:12] in s["team"]), 7)
+            rank_diff = our_r - opp_r
+            upset = (margin > 0 and rank_diff >= 3) or (margin < 0 and rank_diff <= -3)
+            is_upset.append(upset)
+    else:
+        for idx, m in enumerate(matches):
+            s = team_side(m, TEAM)
+            margin = scored(m, s) - allowed(m, s)
+            all_margins.append(margin)
+            is_home.append(s == "A")
 
-        # Rank teams by win%
-        pre_standings = sorted(pre_records.items(),
-                               key=lambda x: (-x[1]["w"] / max(x[1]["w"] + x[1]["l"], 1), -x[1]["w"]))
-        pre_rank = {tn: i + 1 for i, (tn, _) in enumerate(pre_standings)}
+            # Build standings from all comp matches BEFORE this match date
+            pre_records = {}
+            for pm in all_matches:
+                if pm["match_date"] and m["match_date"] and pm["match_date"] < m["match_date"]:
+                    for side in ["a", "b"]:
+                        opp_side = "b" if side == "a" else "a"
+                        tn = canonical_name(pm[f"team_{side}_name"])
+                        if tn not in pre_records:
+                            pre_records[tn] = {"w": 0, "l": 0}
+                        if pm[f"score_{side}"] > pm[f"score_{opp_side}"]:
+                            pre_records[tn]["w"] += 1
+                        else:
+                            pre_records[tn]["l"] += 1
 
-        our_cn = canonical_name(our_name)
-        opp_cn = canonical_name(opp_name(m, s))
-        our_r = pre_rank.get(our_cn, 7)
-        opp_r = pre_rank.get(opp_cn, 7)
-        rank_diff = our_r - opp_r  # positive = opponent ranked higher
+            pre_standings = sorted(pre_records.items(),
+                                   key=lambda x: (-x[1]["w"] / max(x[1]["w"] + x[1]["l"], 1), -x[1]["w"]))
+            pre_rank = {tn: i + 1 for i, (tn, _) in enumerate(pre_standings)}
 
-        # Upset = beat team ranked 3+ higher, or lose to team ranked 3+ lower
-        upset = (margin > 0 and rank_diff >= 3) or (margin < 0 and rank_diff <= -3)
-        is_upset.append(upset)
+            our_cn = canonical_name(our_name)
+            opp_cn = canonical_name(opp_name(m, s))
+            our_r = pre_rank.get(our_cn, 7)
+            opp_r = pre_rank.get(opp_cn, 7)
+            rank_diff = our_r - opp_r
+
+            upset = (margin > 0 and rank_diff >= 3) or (margin < 0 and rank_diff <= -3)
+            is_upset.append(upset)
 
     # Chart dimensions
     chart_x = pdf.l_margin
@@ -1095,21 +1257,37 @@ def main():
     cols = ["Date", "H/@", "Opponent", "Score", "W/L", "+/-", "UPS"]
     widths = [20, 8, 48, 18, 10, 12, 18]
     pdf.table_header(cols, widths)
-    # Get upset status for last 5 (they are the last 5 in the is_upset list)
-    n_matches = len(matches)
-    for j, m in enumerate(last5):
-        idx_in_season = n_matches - 1 - j  # last5[0] = most recent = matches[-1]
-        s = team_side(m, TEAM)
-        sc, al = scored(m, s), allowed(m, s)
-        opp = opp_name(m, s)
-        margin = sc - al
-        wl = "W" if sc > al else "L"
-        upset_marker = "*" if is_upset[idx_in_season] else ""
-        pdf.table_row(
-            [m["match_date"], "H" if s == "A" else "@", opp[:25],
-             f"{sc}-{al}", wl, f"{margin:+d}", upset_marker],
-            widths,
-        )
+    n_total = len(all_margins)
+    if mkosz_results:
+        _l5_src = list(reversed(mkosz_results))[:5]
+        for j, m in enumerate(_l5_src):
+            sc = _mr_scored(m)
+            al = _mr_allowed(m)
+            opp = m["away_team"] if m["is_home"] else m["home_team"]
+            margin = sc - al
+            wl = "W" if sc > al else "L"
+            idx_in_season = n_total - 1 - j
+            upset_marker = "*" if idx_in_season < len(is_upset) and is_upset[idx_in_season] else ""
+            pdf.table_row(
+                [m["date"], "H" if m["is_home"] else "@", opp[:25],
+                 f"{sc}-{al}", wl, f"{margin:+d}", upset_marker],
+                widths,
+            )
+    else:
+        last5 = list(reversed(matches))[:5]
+        for j, m in enumerate(last5):
+            idx_in_season = len(matches) - 1 - j
+            s = team_side(m, TEAM)
+            sc, al = scored(m, s), allowed(m, s)
+            opp = opp_name(m, s)
+            margin = sc - al
+            wl = "W" if sc > al else "L"
+            upset_marker = "*" if is_upset[idx_in_season] else ""
+            pdf.table_row(
+                [m["match_date"], "H" if s == "A" else "@", opp[:25],
+                 f"{sc}-{al}", wl, f"{margin:+d}", upset_marker],
+                widths,
+            )
     pdf.ln(3)
 
     # ── 1.4 Season Shot Chart ──────────────────────────────────
