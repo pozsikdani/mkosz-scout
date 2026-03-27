@@ -156,8 +156,8 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
     w = pdf.w - pdf.l_margin - pdf.r_margin
     y_start = pdf.get_y()
 
-    has_extras = strengths or player_zones
-    card_h = 56 if (strengths and player_zones) else (50 if player_zones else (42 if strengths else 40))
+    # Fixed card height for consistent layout
+    card_h = 56
     if y_start + card_h > pdf.h - 20:
         pdf.add_page()
         y_start = pdf.get_y()
