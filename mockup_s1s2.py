@@ -2968,6 +2968,13 @@ def main():
         if pname not in starter_names and pstats.get('gp', 0) >= 5:
             bench_players_set.add(pname)
 
+    # Also include any player who is on the current MKOSZ roster AND has any PBP data
+    # (catches recent signings or players with few GP who are still on the team)
+    if roster_map:
+        for pname in player_full_stats:
+            if pname not in starter_names and pname in roster_map:
+                bench_players_set.add(pname)
+
     # Filter out players NOT on the current MKOSZ roster (transferred away)
     if roster_map:
         removed = set()
