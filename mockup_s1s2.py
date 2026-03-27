@@ -11,7 +11,7 @@ from fpdf import FPDF
 import sys
 
 DB = "/Users/danipozsik/Desktop/claudecode/mkosz-stats/mkosz_stats.sqlite"
-PBP_DB = "/Users/danipozsik/Desktop/claudecode/mkosz-play-by-play/pbp.sqlite"
+# PBP data is now in mkosz_stats.sqlite (tables: pbp_events, substitutions)
 FONT_DIR = "/System/Library/Fonts/Supplemental/"
 
 import tempfile
@@ -1499,16 +1499,16 @@ def main():
                 pzd[zone_key]["made"] += 1
         # Enrich FT data from PBP events (shotchart API has unreliable FT data)
         try:
-            pbp_ft = sqlite3.connect(PBP_DB)
+            pbp_ft = sqlite3.connect(DB)
             ft_cur = pbp_ft.cursor()
             ft_cur.execute("""
                 SELECT e.player_name,
                        SUM(CASE WHEN e.event_type='FT_MADE' THEN 1 ELSE 0 END) as ft_made,
                        SUM(CASE WHEN e.event_type IN ('FT_MADE','FT_MISS') THEN 1 ELSE 0 END) as ft_total
-                FROM events e
-                JOIN matches m ON e.match_id = m.match_id
+                FROM pbp_events e
+                JOIN matches m ON e.gamecode = m.gamecode
                 WHERE m.comp_code = ?
-                  AND ((m.team_a LIKE ? AND e.team='A') OR (m.team_b LIKE ? AND e.team='B'))
+                  AND ((m.team_a_name LIKE ? AND e.team='A') OR (m.team_b_name LIKE ? AND e.team='B'))
                   AND e.event_type IN ('FT_MADE', 'FT_MISS')
                 GROUP BY e.player_name
             """, (COMP, TEAM, TEAM))
@@ -1941,44 +1941,44 @@ def main():
     starter_freq = {}  # name -> starts_in_last_8
     team_exact = None  # exact team name from DB
     try:
-        pbp_conn = sqlite3.connect(PBP_DB)
+        pbp_conn = sqlite3.connect(DB)
         pbp_cur = pbp_conn.cursor()
         # Find exact team name
         pbp_cur.execute("""
-            SELECT DISTINCT CASE WHEN team_a LIKE ? THEN team_a ELSE team_b END
-            FROM matches WHERE comp_code=? AND (team_a LIKE ? OR team_b LIKE ?) LIMIT 1
+            SELECT DISTINCT CASE WHEN team_a_name LIKE ? THEN team_a_name ELSE team_b_name END
+            FROM matches WHERE comp_code=? AND (team_a_name LIKE ? OR team_b_name LIKE ?) LIMIT 1
         """, (TEAM, COMP, TEAM, TEAM))
         row = pbp_cur.fetchone()
         team_exact = row[0] if row else TEAM.strip("%")
 
         pbp_cur.execute("""
             WITH vasas_matches AS (
-                SELECT m.match_id, m.match_date,
-                       CASE WHEN m.team_a=? THEN 'A' ELSE 'B' END as vasas_side,
+                SELECT m.gamecode, m.match_date,
+                       CASE WHEN m.team_a_name=? THEN 'A' ELSE 'B' END as vasas_side,
                        ROW_NUMBER() OVER (ORDER BY m.match_date DESC) as rn
                 FROM matches m
                 WHERE m.comp_code=?
-                  AND (m.team_a=? OR m.team_b=?)
+                  AND (m.team_a_name=? OR m.team_b_name=?)
             ),
             last8 AS (SELECT * FROM vasas_matches WHERE rn <= 8),
             first_sub_in AS (
-                SELECT s.match_id, s.player_in, MIN(s.event_seq) as first_in
+                SELECT s.gamecode, s.player_in_name, MIN(s.event_seq) as first_in
                 FROM substitutions s
-                JOIN last8 vm ON s.match_id = vm.match_id AND s.team = vm.vasas_side
-                GROUP BY s.match_id, s.player_in
+                JOIN last8 vm ON s.gamecode = vm.gamecode AND s.team = vm.vasas_side
+                GROUP BY s.gamecode, s.player_in_name
             ),
             first_sub_out AS (
-                SELECT s.match_id, s.player_out, MIN(s.event_seq) as first_out
+                SELECT s.gamecode, s.player_out_name, MIN(s.event_seq) as first_out
                 FROM substitutions s
-                JOIN last8 vm ON s.match_id = vm.match_id AND s.team = vm.vasas_side
-                GROUP BY s.match_id, s.player_out
+                JOIN last8 vm ON s.gamecode = vm.gamecode AND s.team = vm.vasas_side
+                GROUP BY s.gamecode, s.player_out_name
             ),
             starters AS (
-                SELECT fo.match_id, fo.player_out as player
+                SELECT fo.gamecode, fo.player_out_name as player
                 FROM first_sub_out fo
                 WHERE NOT EXISTS (
                     SELECT 1 FROM first_sub_in fi
-                    WHERE fi.match_id = fo.match_id AND fi.player_in = fo.player_out AND fi.first_in < fo.first_out
+                    WHERE fi.gamecode = fo.gamecode AND fi.player_in_name = fo.player_out_name AND fi.first_in < fo.first_out
                 )
             )
             SELECT player, COUNT(*) as starts
@@ -2076,18 +2076,18 @@ def main():
 
     # Fill PPG from events DB
     try:
-        conn2 = sqlite3.connect(PBP_DB)
+        conn2 = sqlite3.connect(DB)
         cur2 = conn2.cursor()
         for i, (slot, name, jersey, pos_label, height, ppg, note) in enumerate(projected_five):
             cur2.execute("""
                 SELECT ROUND(SUM(CASE WHEN e.event_type IN ('CLOSE_MADE','MID_MADE','DUNK_MADE') THEN 2
                                       WHEN e.event_type = 'THREE_MADE' THEN 3
                                       WHEN e.event_type = 'FT_MADE' THEN 1 ELSE 0 END) * 1.0
-                             / COUNT(DISTINCT e.match_id), 1)
-                FROM events e
-                JOIN matches m ON e.match_id = m.match_id
+                             / COUNT(DISTINCT e.gamecode), 1)
+                FROM pbp_events e
+                JOIN matches m ON e.gamecode = m.gamecode
                 WHERE m.comp_code=? AND e.player_name = ?
-                  AND ((m.team_a=? AND e.team='A') OR (m.team_b=? AND e.team='B'))
+                  AND ((m.team_a_name=? AND e.team='A') OR (m.team_b_name=? AND e.team='B'))
             """, (COMP, name, team_exact, team_exact))
             row = cur2.fetchone()
             ppg_val = str(row[0]) if row and row[0] else "0.0"
@@ -2286,22 +2286,22 @@ def main():
     # ── Query substitution patterns and draw backups inline under starters ──
     sub_pairs = {}  # starter_name -> [(bench_name, count), ...]
     try:
-        pbp_conn2 = sqlite3.connect(PBP_DB)
+        pbp_conn2 = sqlite3.connect(DB)
         pbp_cur2 = pbp_conn2.cursor()
         pbp_cur2.execute("""
             WITH vasas_matches AS (
-                SELECT m.match_id,
-                       CASE WHEN m.team_a=? THEN 'A' ELSE 'B' END as vasas_side,
+                SELECT m.gamecode,
+                       CASE WHEN m.team_a_name=? THEN 'A' ELSE 'B' END as vasas_side,
                        ROW_NUMBER() OVER (ORDER BY m.match_date DESC) as rn
                 FROM matches m
                 WHERE m.comp_code=?
-                  AND (m.team_a=? OR m.team_b=?)
+                  AND (m.team_a_name=? OR m.team_b_name=?)
             ),
             last8 AS (SELECT * FROM vasas_matches WHERE rn <= 8)
-            SELECT s.player_out, s.player_in, COUNT(*) as times
+            SELECT s.player_out_name, s.player_in_name, COUNT(*) as times
             FROM substitutions s
-            JOIN last8 vm ON s.match_id = vm.match_id AND s.team = vm.vasas_side
-            GROUP BY s.player_out, s.player_in
+            JOIN last8 vm ON s.gamecode = vm.gamecode AND s.team = vm.vasas_side
+            GROUP BY s.player_out_name, s.player_in_name
             ORDER BY times DESC
         """, (team_exact, COMP, team_exact, team_exact))
         for row in pbp_cur2.fetchall():
@@ -2450,15 +2450,15 @@ def main():
     # Compute MPG per player from substitution tracking (same approach as lineup tracker)
     player_mpg_map = {}  # name -> {"mpg": int, "gp": int}
     try:
-        mpg_conn = sqlite3.connect(PBP_DB)
+        mpg_conn = sqlite3.connect(DB)
         mpg_cur = mpg_conn.cursor()
         mpg_cur.execute("""
-            SELECT match_id, vs FROM (
-                SELECT m.match_id,
-                       CASE WHEN m.team_a=? THEN 'A' ELSE 'B' END as vs,
+            SELECT gamecode, vs FROM (
+                SELECT m.gamecode,
+                       CASE WHEN m.team_a_name=? THEN 'A' ELSE 'B' END as vs,
                        ROW_NUMBER() OVER (ORDER BY m.match_date DESC) as rn
                 FROM matches m WHERE m.comp_code=?
-                  AND (m.team_a=? OR m.team_b=?)
+                  AND (m.team_a_name=? OR m.team_b_name=?)
             ) WHERE rn <= 8
         """, (team_exact, COMP, team_exact, team_exact))
         mpg_matches = mpg_cur.fetchall()
@@ -2470,12 +2470,12 @@ def main():
             # Find starters for this match
             mpg_cur.execute("""
                 WITH fsi AS (
-                    SELECT player_in, MIN(event_seq) fi FROM substitutions WHERE match_id=? AND team=? GROUP BY player_in
+                    SELECT player_in_name, MIN(event_seq) fi FROM substitutions WHERE gamecode=? AND team=? GROUP BY player_in_name
                 ), fso AS (
-                    SELECT player_out, MIN(event_seq) fo FROM substitutions WHERE match_id=? AND team=? GROUP BY player_out
+                    SELECT player_out_name, MIN(event_seq) fo FROM substitutions WHERE gamecode=? AND team=? GROUP BY player_out_name
                 )
-                SELECT fso.player_out FROM fso
-                WHERE NOT EXISTS (SELECT 1 FROM fsi WHERE fsi.player_in=fso.player_out AND fsi.fi<fso.fo)
+                SELECT fso.player_out_name FROM fso
+                WHERE NOT EXISTS (SELECT 1 FROM fsi WHERE fsi.player_in_name=fso.player_out_name AND fsi.fi<fso.fo)
             """, (mid, vs, mid, vs))
             on_court = set(r[0] for r in mpg_cur.fetchall())
             if len(on_court) != 5:
@@ -2483,10 +2483,10 @@ def main():
 
             # Get all subs with minute data
             mpg_cur.execute("""
-                SELECT s.event_seq, s.player_out, s.player_in,
-                       COALESCE((SELECT e.minute FROM events e WHERE e.match_id=s.match_id
+                SELECT s.event_seq, s.player_out_name, s.player_in_name,
+                       COALESCE((SELECT e.minute FROM pbp_events e WHERE e.gamecode=s.gamecode
                         AND e.event_seq <= s.event_seq ORDER BY e.event_seq DESC LIMIT 1), 0)
-                FROM substitutions s WHERE s.match_id=? AND s.team=?
+                FROM substitutions s WHERE s.gamecode=? AND s.team=?
                 ORDER BY s.event_seq
             """, (mid, vs))
             subs = mpg_cur.fetchall()
@@ -2658,15 +2658,15 @@ def main():
     # Compute lineup data from PBP
     lineup_data = []  # [(names_list, min, gp, pf, pa, net, nrtg)]
     try:
-        pbp_conn3 = sqlite3.connect(PBP_DB)
+        pbp_conn3 = sqlite3.connect(DB)
         pbp_cur3 = pbp_conn3.cursor()
         pbp_cur3.execute("""
-            SELECT match_id, vs FROM (
-                SELECT m.match_id,
-                       CASE WHEN m.team_a=? THEN 'A' ELSE 'B' END as vs,
+            SELECT gamecode, vs FROM (
+                SELECT m.gamecode,
+                       CASE WHEN m.team_a_name=? THEN 'A' ELSE 'B' END as vs,
                        ROW_NUMBER() OVER (ORDER BY m.match_date DESC) as rn
                 FROM matches m WHERE m.comp_code=?
-                  AND (m.team_a=? OR m.team_b=?)
+                  AND (m.team_a_name=? OR m.team_b_name=?)
             ) WHERE rn <= 8
         """, (team_exact, COMP, team_exact, team_exact))
         lu_matches = pbp_cur3.fetchall()
@@ -2677,29 +2677,29 @@ def main():
         for mid, vs in lu_matches:
             pbp_cur3.execute("""
                 WITH fsi AS (
-                    SELECT player_in, MIN(event_seq) fi FROM substitutions WHERE match_id=? AND team=? GROUP BY player_in
+                    SELECT player_in_name, MIN(event_seq) fi FROM substitutions WHERE gamecode=? AND team=? GROUP BY player_in_name
                 ), fso AS (
-                    SELECT player_out, MIN(event_seq) fo FROM substitutions WHERE match_id=? AND team=? GROUP BY player_out
+                    SELECT player_out_name, MIN(event_seq) fo FROM substitutions WHERE gamecode=? AND team=? GROUP BY player_out_name
                 )
-                SELECT fso.player_out FROM fso
-                WHERE NOT EXISTS (SELECT 1 FROM fsi WHERE fsi.player_in=fso.player_out AND fsi.fi<fso.fo)
+                SELECT fso.player_out_name FROM fso
+                WHERE NOT EXISTS (SELECT 1 FROM fsi WHERE fsi.player_in_name=fso.player_out_name AND fsi.fi<fso.fo)
             """, (mid, vs, mid, vs))
             oc = set(r[0] for r in pbp_cur3.fetchall())
             if len(oc) != 5:
                 continue
 
             pbp_cur3.execute("""
-                SELECT s.event_seq, s.player_out, s.player_in,
-                       COALESCE((SELECT e.minute FROM events e WHERE e.match_id=s.match_id
+                SELECT s.event_seq, s.player_out_name, s.player_in_name,
+                       COALESCE((SELECT e.minute FROM pbp_events e WHERE e.gamecode=s.gamecode
                         AND e.event_seq <= s.event_seq ORDER BY e.event_seq DESC LIMIT 1), 0)
-                FROM substitutions s WHERE s.match_id=? AND s.team=?
+                FROM substitutions s WHERE s.gamecode=? AND s.team=?
                 ORDER BY s.event_seq
             """, (mid, vs))
             subs_data = pbp_cur3.fetchall()
 
             pbp_cur3.execute("""
-                SELECT event_seq, team, points, minute FROM events
-                WHERE match_id=? AND points > 0 ORDER BY event_seq
+                SELECT event_seq, team, points, minute FROM pbp_events
+                WHERE gamecode=? AND points > 0 ORDER BY event_seq
             """, (mid,))
             scoring_data = pbp_cur3.fetchall()
 
@@ -2845,31 +2845,31 @@ def main():
     # ── Compute per-player full stats from PBP events (for cards + strengths) ──
     player_full_stats = {}  # name -> dict with all per-game stats
     try:
-        pfs_conn = sqlite3.connect(PBP_DB)
+        pfs_conn = sqlite3.connect(DB)
         pfs_cur = pfs_conn.cursor()
         pfs_cur.execute("""
             SELECT e.player_name,
-                COUNT(DISTINCT e.match_id) as gp,
+                COUNT(DISTINCT e.gamecode) as gp,
                 -- Points
                 SUM(CASE WHEN event_type IN ('CLOSE_MADE','MID_MADE','DUNK_MADE') THEN 2
                          WHEN event_type='THREE_MADE' THEN 3
-                         WHEN event_type='FT_MADE' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as ppg,
+                         WHEN event_type='FT_MADE' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.gamecode) as ppg,
                 -- Rebounds
-                SUM(CASE WHEN event_type IN ('OREB','DREB') THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as rpg,
-                SUM(CASE WHEN event_type='OREB' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as oreb_pg,
-                SUM(CASE WHEN event_type='DREB' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as dreb_pg,
+                SUM(CASE WHEN event_type IN ('OREB','DREB') THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.gamecode) as rpg,
+                SUM(CASE WHEN event_type='OREB' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.gamecode) as oreb_pg,
+                SUM(CASE WHEN event_type='DREB' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.gamecode) as dreb_pg,
                 -- Assists
-                SUM(CASE WHEN event_type='AST' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as apg,
+                SUM(CASE WHEN event_type='AST' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.gamecode) as apg,
                 -- Turnovers
-                SUM(CASE WHEN event_type='TOV' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as tpg,
+                SUM(CASE WHEN event_type='TOV' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.gamecode) as tpg,
                 -- Fouls
-                SUM(CASE WHEN event_type='FOUL' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as fpg,
+                SUM(CASE WHEN event_type='FOUL' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.gamecode) as fpg,
                 -- Steals
-                SUM(CASE WHEN event_type='STL' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as spg,
+                SUM(CASE WHEN event_type='STL' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.gamecode) as spg,
                 -- Blocks
-                SUM(CASE WHEN event_type='BLK' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as bpg,
+                SUM(CASE WHEN event_type='BLK' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.gamecode) as bpg,
                 -- FT drawn per game
-                SUM(CASE WHEN event_type='FOUL_DRAWN' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as ft_drawn_pg,
+                SUM(CASE WHEN event_type='FOUL_DRAWN' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.gamecode) as ft_drawn_pg,
                 -- FG% (2P + 3P)
                 CASE WHEN SUM(CASE WHEN event_type IN ('CLOSE_MADE','MID_MADE','DUNK_MADE','THREE_MADE',
                     'CLOSE_MISS','MID_MISS','DUNK_MISS','THREE_MISS') THEN 1 ELSE 0 END) > 0
@@ -2883,7 +2883,7 @@ def main():
                          SUM(CASE WHEN event_type IN ('THREE_MADE','THREE_MISS') THEN 1 ELSE 0 END), 1)
                     ELSE 0 END as three_pct,
                 SUM(CASE WHEN event_type IN ('THREE_MADE','THREE_MISS') THEN 1 ELSE 0 END) as three_att_total,
-                SUM(CASE WHEN event_type IN ('THREE_MADE','THREE_MISS') THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as three_att_pg,
+                SUM(CASE WHEN event_type IN ('THREE_MADE','THREE_MISS') THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.gamecode) as three_att_pg,
                 -- FT%
                 CASE WHEN SUM(CASE WHEN event_type IN ('FT_MADE','FT_MISS') THEN 1 ELSE 0 END) > 0
                     THEN ROUND(SUM(CASE WHEN event_type='FT_MADE' THEN 1 ELSE 0 END)*100.0 /
@@ -2898,10 +2898,10 @@ def main():
                 -- Total OREB count (for threshold)
                 SUM(CASE WHEN event_type='OREB' THEN 1 ELSE 0 END) as oreb_total,
                 SUM(CASE WHEN event_type='DREB' THEN 1 ELSE 0 END) as dreb_total
-            FROM events e
-            JOIN matches m ON e.match_id = m.match_id
+            FROM pbp_events e
+            JOIN matches m ON e.gamecode = m.gamecode
             WHERE m.comp_code=? AND e.player_name != ''
-              AND ((m.team_a=? AND e.team='A') OR (m.team_b=? AND e.team='B'))
+              AND ((m.team_a_name=? AND e.team='A') OR (m.team_b_name=? AND e.team='B'))
             GROUP BY e.player_name
         """, (COMP, team_exact, team_exact))
         for row in pfs_cur.fetchall():
@@ -2961,20 +2961,20 @@ def main():
     # ── Compute league-wide percentiles for strength tag thresholds ──
     league_stats_all = {}  # stat -> sorted list of values across all players (min 10 GP)
     try:
-        lg_conn = sqlite3.connect(PBP_DB)
+        lg_conn = sqlite3.connect(DB)
         lg_cur = lg_conn.cursor()
         lg_cur.execute("""
             SELECT e.player_name,
-                COUNT(DISTINCT e.match_id) as gp,
+                COUNT(DISTINCT e.gamecode) as gp,
                 SUM(CASE WHEN event_type IN ('CLOSE_MADE','MID_MADE','DUNK_MADE') THEN 2
                          WHEN event_type='THREE_MADE' THEN 3
-                         WHEN event_type='FT_MADE' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as ppg,
-                SUM(CASE WHEN event_type='AST' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as apg,
-                SUM(CASE WHEN event_type='OREB' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as oreb_pg,
-                SUM(CASE WHEN event_type='DREB' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as dreb_pg,
-                SUM(CASE WHEN event_type='STL' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as spg,
-                SUM(CASE WHEN event_type='BLK' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as bpg
-            FROM events e JOIN matches m ON e.match_id = m.match_id
+                         WHEN event_type='FT_MADE' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.gamecode) as ppg,
+                SUM(CASE WHEN event_type='AST' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.gamecode) as apg,
+                SUM(CASE WHEN event_type='OREB' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.gamecode) as oreb_pg,
+                SUM(CASE WHEN event_type='DREB' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.gamecode) as dreb_pg,
+                SUM(CASE WHEN event_type='STL' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.gamecode) as spg,
+                SUM(CASE WHEN event_type='BLK' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.gamecode) as bpg
+            FROM pbp_events e JOIN matches m ON e.gamecode = m.gamecode
             WHERE m.comp_code=? AND e.player_name != ''
             GROUP BY e.player_name HAVING gp >= 10
         """, (COMP,))
@@ -3037,28 +3037,28 @@ def main():
     # Compute league-wide percentiles from PBP data
     player_percentiles = {}  # name -> {stat: percentile}
     try:
-        pbp_pct = sqlite3.connect(PBP_DB)
+        pbp_pct = sqlite3.connect(DB)
         pct_cur = pbp_pct.cursor()
         pct_cur.execute("""
             SELECT e.player_name,
-                CASE WHEN e.team='A' THEN m.team_a ELSE m.team_b END as team,
-                COUNT(DISTINCT e.match_id) as gp,
+                CASE WHEN e.team='A' THEN m.team_a_name ELSE m.team_b_name END as team,
+                COUNT(DISTINCT e.gamecode) as gp,
                 SUM(CASE WHEN event_type IN ('CLOSE_MADE','MID_MADE','DUNK_MADE') THEN 2
                          WHEN event_type='THREE_MADE' THEN 3
-                         WHEN event_type='FT_MADE' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as ppg,
-                SUM(CASE WHEN event_type='AST' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as apg,
-                SUM(CASE WHEN event_type IN ('OREB','DREB') THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as rpg,
-                SUM(CASE WHEN event_type='STL' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as spg,
-                SUM(CASE WHEN event_type='BLK' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as bpg,
-                SUM(CASE WHEN event_type='TOV' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as topg,
-                SUM(CASE WHEN event_type='FOUL' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.match_id) as fpg,
+                         WHEN event_type='FT_MADE' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.gamecode) as ppg,
+                SUM(CASE WHEN event_type='AST' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.gamecode) as apg,
+                SUM(CASE WHEN event_type IN ('OREB','DREB') THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.gamecode) as rpg,
+                SUM(CASE WHEN event_type='STL' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.gamecode) as spg,
+                SUM(CASE WHEN event_type='BLK' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.gamecode) as bpg,
+                SUM(CASE WHEN event_type='TOV' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.gamecode) as topg,
+                SUM(CASE WHEN event_type='FOUL' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.gamecode) as fpg,
                 CASE WHEN SUM(CASE WHEN event_type IN ('CLOSE_MADE','MID_MADE','DUNK_MADE','THREE_MADE',
                     'CLOSE_MISS','MID_MISS','DUNK_MISS','THREE_MISS') THEN 1 ELSE 0 END) >= 30
                     THEN ROUND(SUM(CASE WHEN event_type IN ('CLOSE_MADE','MID_MADE','DUNK_MADE','THREE_MADE') THEN 1 ELSE 0 END)*100.0 /
                          SUM(CASE WHEN event_type IN ('CLOSE_MADE','MID_MADE','DUNK_MADE','THREE_MADE',
                              'CLOSE_MISS','MID_MISS','DUNK_MISS','THREE_MISS') THEN 1 ELSE 0 END), 1)
                     ELSE NULL END as fg_pct
-            FROM events e JOIN matches m ON e.match_id=m.match_id
+            FROM pbp_events e JOIN matches m ON e.gamecode=m.gamecode
             WHERE m.comp_code=? AND e.player_name != ''
             GROUP BY e.player_name HAVING gp >= 10
         """, (COMP,))
@@ -3311,22 +3311,855 @@ def main():
                     player_zones=player_subzones.get(name),
                     percentiles=player_percentiles.get(name))
 
+    # ── §3 HEAD-TO-HEAD ANALYSIS ─────────────────────────────────
+    if VS_TEAM:
+        vs_strip = VS_TEAM.strip("%")
+        # Find H2H matches from mkosz_stats DB
+        h2h_matches = [m for m in all_matches
+                        if (TEAM.strip("%") in (m["team_a_name"] or "") and vs_strip in (m["team_b_name"] or ""))
+                        or (vs_strip in (m["team_a_name"] or "") and TEAM.strip("%") in (m["team_b_name"] or ""))]
+        h2h_matches.sort(key=lambda m: m.get("match_date") or "")
+
+        if h2h_matches:
+            # Resolve VS team display name
+            _s0 = team_side(h2h_matches[0], TEAM)
+            vs_display = h2h_matches[0]["team_b_name"] if _s0 == "A" else h2h_matches[0]["team_a_name"]
+
+            # H2H record
+            h2h_w = sum(1 for m in h2h_matches if scored(m, team_side(m, TEAM)) > allowed(m, team_side(m, TEAM)))
+            h2h_l = len(h2h_matches) - h2h_w
+            h2h_avg_scored = sum(scored(m, team_side(m, TEAM)) for m in h2h_matches) / len(h2h_matches)
+            h2h_avg_allowed = sum(allowed(m, team_side(m, TEAM)) for m in h2h_matches) / len(h2h_matches)
+            h2h_avg_margin = h2h_avg_scored - h2h_avg_allowed
+
+            print(f"  H2H: {our_name} vs {vs_display}: {h2h_w}-{h2h_l} ({len(h2h_matches)} games)")
+
+            pdf.add_page()
+            pdf.section_title(f"3. Head-to-Head Analysis")
+            pdf.set_font("Arial", "I", 10)
+            pdf.set_text_color(120, 120, 120)
+            pdf.cell(0, 5, f"vs {vs_display}  |  {len(h2h_matches)} game{'s' if len(h2h_matches) > 1 else ''}")
+            pdf.ln(7)
+
+            # ── 3.1 Match History ──
+            pdf.subsection("3.1 Match History")
+            pdf.set_font("Arial", "B", 9)
+            pdf.set_text_color(30, 30, 30)
+            pdf.cell(0, 5, f"H2H Record: {h2h_w}-{h2h_l}  |  Avg Margin: {h2h_avg_margin:+.1f}  |  Avg Score: {h2h_avg_scored:.1f} - {h2h_avg_allowed:.1f}")
+            pdf.ln(7)
+
+            cols = ["Date", "H/@", "Opponent", "Score", "+/-", "Q1", "Q2", "Q3", "Q4"]
+            widths = [22, 8, 40, 18, 12, 16, 16, 16, 16]
+            pdf.table_header(cols, widths)
+
+            for m in h2h_matches:
+                s = team_side(m, TEAM)
+                sc, al = scored(m, s), allowed(m, s)
+                margin = sc - al
+                wl = sc > al
+                opp = opp_name(m, s)
+                # Parse quarter scores
+                qs_cells = []  # (text, won_quarter)
+                try:
+                    qs = json.loads(m.get("quarter_scores") or "[]")
+                    for pair in qs[:4]:
+                        if len(pair) == 2:
+                            qa = pair[0] if s == "A" else pair[1]
+                            qb = pair[1] if s == "A" else pair[0]
+                            qs_cells.append((f"{qa}-{qb}", qa > qb, qa < qb))
+                except:
+                    pass
+                while len(qs_cells) < 4:
+                    qs_cells.append(("-", False, False))
+
+                # Row base color
+                row_bg_green = (230, 255, 230)
+                row_bg_red = (255, 230, 230)
+                row_bg = row_bg_green if wl else row_bg_red
+
+                pdf.set_font("Arial", "", 7.5)
+                pdf.set_text_color(30, 30, 30)
+                base_cells = [m.get("match_date", ""), "H" if s == "A" else "@", opp[:22],
+                              f"{sc}-{al}", f"{margin:+d}"]
+
+                # Render base cells with row background
+                pdf.set_fill_color(*row_bg)
+                for i, cell in enumerate(base_cells):
+                    pdf.cell(widths[i], 5.5, str(cell), fill=True, align="L" if i <= 2 else "C")
+
+                # Render quarter cells with per-quarter coloring
+                for qi, (q_text, q_won, q_lost) in enumerate(qs_cells):
+                    if q_won:
+                        pdf.set_fill_color(210, 245, 210)
+                    elif q_lost:
+                        pdf.set_fill_color(250, 215, 215)
+                    else:
+                        pdf.set_fill_color(*row_bg)
+                    pdf.cell(widths[5 + qi], 5.5, q_text, fill=True, align="C")
+                pdf.ln(5.5)
+
+            pdf.ln(3)
+
+            # ── 3.2 Quarter-by-Quarter Breakdown ──
+            pdf.subsection("3.2 Quarter-by-Quarter Breakdown")
+
+            # Parse quarter scores for all H2H matches
+            h2h_q_team = {q: [] for q in range(1, 5)}
+            h2h_q_opp = {q: [] for q in range(1, 5)}
+            for m in h2h_matches:
+                s = team_side(m, TEAM)
+                try:
+                    qs = json.loads(m.get("quarter_scores") or "[]")
+                    for i, pair in enumerate(qs[:4]):
+                        if len(pair) == 2:
+                            t_pts = pair[0] if s == "A" else pair[1]
+                            o_pts = pair[1] if s == "A" else pair[0]
+                            h2h_q_team[i + 1].append(t_pts)
+                            h2h_q_opp[i + 1].append(o_pts)
+                except:
+                    pass
+
+            if any(h2h_q_team[q] for q in range(1, 5)):
+                # Colored table: rows = games + avg, columns = Q1-Q4 + Total
+                # Margin shown in each cell, green/red background
+                lbl_w = 28
+                q_w = 22
+                tot_w = 22
+                row_h = 6
+
+                # Header
+                pdf.set_font("Arial", "B", 7)
+                pdf.set_fill_color(40, 40, 40)
+                pdf.set_text_color(255, 255, 255)
+                pdf.cell(lbl_w, row_h, "Game", fill=True, align="L")
+                for qi in range(1, 5):
+                    pdf.cell(q_w, row_h, f"Q{qi}", fill=True, align="C")
+                pdf.cell(tot_w, row_h, "TOTAL", fill=True, align="C")
+                pdf.ln(row_h)
+
+                # Per-game rows
+                h2h_q_margins = {q: [] for q in range(1, 5)}
+                h2h_totals = []  # (team_total, opp_total) per game
+
+                for gi, m in enumerate(h2h_matches):
+                    s = team_side(m, TEAM)
+                    date_str = (m.get("match_date") or "")[-5:]  # "MM-DD"
+                    sc, al = scored(m, s), allowed(m, s)
+                    total_margin = sc - al
+                    ha = "H" if s == "A" else "@"
+
+                    pdf.set_font("Arial", "", 7)
+                    pdf.set_fill_color(248, 248, 252)
+                    pdf.set_text_color(60, 60, 60)
+                    pdf.cell(lbl_w, row_h, f"G{gi + 1} {date_str} ({ha})", fill=True, align="L")
+
+                    try:
+                        qs = json.loads(m.get("quarter_scores") or "[]")
+                    except:
+                        qs = []
+
+                    for qi in range(1, 5):
+                        if qi - 1 < len(qs) and len(qs[qi - 1]) == 2:
+                            t_pts = qs[qi - 1][0] if s == "A" else qs[qi - 1][1]
+                            o_pts = qs[qi - 1][1] if s == "A" else qs[qi - 1][0]
+                            diff = t_pts - o_pts
+                            h2h_q_margins[qi].append(diff)
+                            # Color: green if won quarter, red if lost
+                            if diff > 0:
+                                pdf.set_fill_color(210, 245, 210)
+                                pdf.set_text_color(30, 120, 30)
+                            elif diff < 0:
+                                pdf.set_fill_color(250, 215, 215)
+                                pdf.set_text_color(180, 40, 40)
+                            else:
+                                pdf.set_fill_color(240, 240, 240)
+                                pdf.set_text_color(100, 100, 100)
+                            pdf.set_font("Arial", "B", 7)
+                            pdf.cell(q_w, row_h, f"{diff:+d}", fill=True, align="C")
+                        else:
+                            pdf.set_fill_color(248, 248, 252)
+                            pdf.set_text_color(160, 160, 160)
+                            pdf.cell(q_w, row_h, "-", fill=True, align="C")
+
+                    # Total column
+                    if total_margin > 0:
+                        pdf.set_fill_color(200, 240, 200)
+                        pdf.set_text_color(30, 120, 30)
+                    elif total_margin < 0:
+                        pdf.set_fill_color(245, 210, 210)
+                        pdf.set_text_color(180, 40, 40)
+                    else:
+                        pdf.set_fill_color(240, 240, 240)
+                        pdf.set_text_color(100, 100, 100)
+                    pdf.set_font("Arial", "B", 7)
+                    pdf.cell(tot_w, row_h, f"{total_margin:+d}", fill=True, align="C")
+                    pdf.ln(row_h)
+
+                # Average row
+                pdf.set_font("Arial", "B", 7)
+                pdf.set_fill_color(60, 60, 60)
+                pdf.set_text_color(255, 255, 255)
+                pdf.cell(lbl_w, row_h, "AVG", fill=True, align="L")
+                total_avg = 0
+                for qi in range(1, 5):
+                    margins = h2h_q_margins[qi]
+                    avg = sum(margins) / len(margins) if margins else 0
+                    total_avg += avg
+                    if avg > 0:
+                        pdf.set_fill_color(60, 60, 60)
+                        pdf.set_text_color(140, 230, 140)
+                    elif avg < 0:
+                        pdf.set_fill_color(60, 60, 60)
+                        pdf.set_text_color(240, 140, 140)
+                    else:
+                        pdf.set_fill_color(60, 60, 60)
+                        pdf.set_text_color(200, 200, 200)
+                    pdf.cell(q_w, row_h, f"{avg:+.1f}", fill=True, align="C")
+
+                if total_avg > 0:
+                    pdf.set_text_color(140, 230, 140)
+                elif total_avg < 0:
+                    pdf.set_text_color(240, 140, 140)
+                else:
+                    pdf.set_text_color(200, 200, 200)
+                pdf.set_fill_color(60, 60, 60)
+                pdf.cell(tot_w, row_h, f"{total_avg:+.1f}", fill=True, align="C")
+                pdf.ln(row_h + 3)
+
+            # ── 3.3 Quarter Lineup Analysis ──
+            h2h_gamecodes = [m["gamecode"] for m in h2h_matches]
+            try:
+                pbp_lu = sqlite3.connect(DB)
+                pbp_lu.row_factory = sqlite3.Row
+
+                pdf.subsection("3.3 Quarter Lineup Analysis")
+
+                # For each H2H game, reconstruct who started each quarter
+                # Method: game starters from subs (out before in), then track subs per quarter
+                def get_quarter_lineups(match_id, pbp_c):
+                    """Return {quarter: {team_side: set_of_player_names}} for quarter starters."""
+                    subs = [dict(r) for r in pbp_c.execute(
+                        "SELECT * FROM substitutions WHERE gamecode=? ORDER BY event_seq",
+                        (match_id,)
+                    ).fetchall()]
+
+                    result = {}
+                    for team_s in ["A", "B"]:
+                        t_subs = [s for s in subs if s["team"] == team_s]
+
+                        # Game starters: subbed out before ever subbed in
+                        first_in = set()
+                        game_starters = set()
+                        for s in t_subs:
+                            if s["player_out_name"] not in first_in:
+                                game_starters.add(s["player_out_name"])
+                            first_in.add(s["player_in_name"])
+
+                        # Track on-court set through the game
+                        on_court = set(game_starters)
+                        current_q = 1
+                        result[(current_q, team_s)] = frozenset(on_court)
+
+                        for s in t_subs:
+                            q = s.get("quarter", 1) or 1
+                            if q > current_q:
+                                # New quarter starts — save current on-court as Q starters
+                                for new_q in range(current_q + 1, q + 1):
+                                    result[(new_q, team_s)] = frozenset(on_court)
+                                current_q = q
+                            on_court.discard(s["player_out_name"])
+                            on_court.add(s["player_in_name"])
+
+                        # Fill remaining quarters
+                        for q in range(current_q + 1, 5):
+                            result[(q, team_s)] = frozenset(on_court)
+
+                    return result
+
+                # Build lineup data for all H2H games
+                all_q_lineups = []  # list of (game_idx, quarter, team_side, our_lineup, opp_lineup, margin)
+                for gi, m in enumerate(h2h_matches):
+                    mid = m["gamecode"]
+                    s = team_side(m, TEAM)
+                    opp_s = "B" if s == "A" else "A"
+
+                    q_lineups = get_quarter_lineups(mid, pbp_lu)
+                    try:
+                        qs = json.loads(m.get("quarter_scores") or "[]")
+                    except:
+                        qs = []
+
+                    for q in range(1, 5):
+                        our_lu = q_lineups.get((q, s), frozenset())
+                        opp_lu = q_lineups.get((q, opp_s), frozenset())
+                        if q - 1 < len(qs) and len(qs[q - 1]) == 2:
+                            t_pts = qs[q - 1][0] if s == "A" else qs[q - 1][1]
+                            o_pts = qs[q - 1][1] if s == "A" else qs[q - 1][0]
+                            margin = t_pts - o_pts
+                        else:
+                            margin = 0
+                        all_q_lineups.append((gi, q, our_lu, opp_lu, margin))
+
+                # Shorten player names for display
+                def short_name(n):
+                    """'Fekete Viktor Norbert' -> 'Fekete V.'"""
+                    parts = n.split()
+                    if len(parts) >= 2:
+                        return f"{parts[0]} {parts[1][0]}."
+                    return n[:12]
+
+                def lineup_str(lu, max_names=5):
+                    names = sorted(lu)[:max_names]
+                    return " / ".join(short_name(n) for n in names)
+
+                # Part A: Our lineup per quarter per game
+                pdf.set_font("Arial", "B", 8)
+                pdf.set_text_color(100, 100, 100)
+                pdf.cell(0, 5, f"{our_name} — Quarter Lineups")
+                pdf.ln(5)
+
+                for gi, m in enumerate(h2h_matches):
+                    s = team_side(m, TEAM)
+                    date_str = (m.get("match_date") or "")
+                    sc, al = scored(m, s), allowed(m, s)
+                    ha = "H" if s == "A" else "@"
+
+                    pdf.set_font("Arial", "B", 7)
+                    pdf.set_text_color(60, 60, 60)
+                    pdf.cell(0, 4, f"Game {gi + 1}: {date_str} ({ha}) — {sc}-{al}")
+                    pdf.ln(4.5)
+
+                    for _, q, our_lu, opp_lu, margin in [x for x in all_q_lineups if x[0] == gi]:
+                        if not our_lu:
+                            continue
+                        # Color based on margin
+                        if margin > 0:
+                            pdf.set_fill_color(210, 245, 210)
+                            pdf.set_text_color(30, 120, 30)
+                        elif margin < 0:
+                            pdf.set_fill_color(250, 215, 215)
+                            pdf.set_text_color(180, 40, 40)
+                        else:
+                            pdf.set_fill_color(240, 240, 240)
+                            pdf.set_text_color(100, 100, 100)
+
+                        pdf.set_font("Arial", "B", 6.5)
+                        pdf.cell(10, 4.5, f"Q{q}", fill=True, align="C")
+                        pdf.set_font("Arial", "", 6.5)
+                        pdf.cell(110, 4.5, f"  {lineup_str(our_lu)}", fill=True)
+                        pdf.set_font("Arial", "B", 6.5)
+                        pdf.cell(14, 4.5, f"{margin:+d}", fill=True, align="C")
+                        pdf.ln(4.5)
+                    pdf.ln(2)
+
+                # Part B: Opponent lineup matchups — focus on losing quarters
+                pdf.set_font("Arial", "B", 8)
+                pdf.set_text_color(100, 100, 100)
+                pdf.cell(0, 5, f"Opponent Lineups ({vs_display}) — Quarter Matchups")
+                pdf.ln(5)
+
+                for gi, m in enumerate(h2h_matches):
+                    s = team_side(m, TEAM)
+                    date_str = (m.get("match_date") or "")
+                    sc, al = scored(m, s), allowed(m, s)
+                    ha = "H" if s == "A" else "@"
+
+                    pdf.set_font("Arial", "B", 7)
+                    pdf.set_text_color(60, 60, 60)
+                    pdf.cell(0, 4, f"Game {gi + 1}: {date_str} ({ha}) — {sc}-{al}")
+                    pdf.ln(4.5)
+
+                    for _, q, our_lu, opp_lu, margin in [x for x in all_q_lineups if x[0] == gi]:
+                        if not opp_lu:
+                            continue
+                        if margin > 0:
+                            pdf.set_fill_color(210, 245, 210)
+                            pdf.set_text_color(30, 120, 30)
+                        elif margin < 0:
+                            pdf.set_fill_color(250, 215, 215)
+                            pdf.set_text_color(180, 40, 40)
+                        else:
+                            pdf.set_fill_color(240, 240, 240)
+                            pdf.set_text_color(100, 100, 100)
+
+                        pdf.set_font("Arial", "B", 6.5)
+                        pdf.cell(10, 4.5, f"Q{q}", fill=True, align="C")
+                        pdf.set_font("Arial", "", 6.5)
+                        pdf.cell(110, 4.5, f"  {lineup_str(opp_lu)}", fill=True)
+                        pdf.set_font("Arial", "B", 6.5)
+                        pdf.cell(14, 4.5, f"{margin:+d}", fill=True, align="C")
+                        pdf.ln(4.5)
+                    pdf.ln(2)
+
+                # Best/worst lineup summary
+                if all_q_lineups:
+                    # Group by our lineup, compute avg margin
+                    from collections import defaultdict
+                    lu_margins = defaultdict(list)
+                    opp_lu_margins = defaultdict(list)
+                    for gi, q, our_lu, opp_lu, margin in all_q_lineups:
+                        if our_lu:
+                            lu_margins[our_lu].append(margin)
+                        if opp_lu:
+                            opp_lu_margins[opp_lu].append(margin)
+
+                    # Best/worst our lineup (by avg margin)
+                    if lu_margins:
+                        best_lu = max(lu_margins.items(), key=lambda x: sum(x[1]) / len(x[1]))
+                        worst_lu = min(lu_margins.items(), key=lambda x: sum(x[1]) / len(x[1]))
+
+                        pdf.set_font("Arial", "I", 7)
+                        avg_b = sum(best_lu[1]) / len(best_lu[1])
+                        pdf.set_text_color(60, 140, 60)
+                        pdf.cell(0, 3.5, f"Best lineup: {lineup_str(best_lu[0])} ({avg_b:+.1f} avg, {len(best_lu[1])} Q)")
+                        pdf.ln(3.5)
+
+                        avg_w = sum(worst_lu[1]) / len(worst_lu[1])
+                        if worst_lu[0] != best_lu[0]:
+                            pdf.set_text_color(180, 50, 50)
+                            pdf.cell(0, 3.5, f"Worst lineup: {lineup_str(worst_lu[0])} ({avg_w:+.1f} avg, {len(worst_lu[1])} Q)")
+                            pdf.ln(3.5)
+
+                    # Toughest opponent lineup
+                    if opp_lu_margins:
+                        tough_opp = min(opp_lu_margins.items(), key=lambda x: sum(x[1]) / len(x[1]))
+                        avg_t = sum(tough_opp[1]) / len(tough_opp[1])
+                        pdf.set_text_color(180, 50, 50)
+                        pdf.cell(0, 3.5, f"Toughest opp lineup: {lineup_str(tough_opp[0])} ({avg_t:+.1f} avg, {len(tough_opp[1])} Q)")
+                        pdf.ln(3.5)
+
+                        easy_opp = max(opp_lu_margins.items(), key=lambda x: sum(x[1]) / len(x[1]))
+                        if easy_opp[0] != tough_opp[0]:
+                            avg_e = sum(easy_opp[1]) / len(easy_opp[1])
+                            pdf.set_text_color(60, 140, 60)
+                            pdf.cell(0, 3.5, f"Weakest opp lineup: {lineup_str(easy_opp[0])} ({avg_e:+.1f} avg, {len(easy_opp[1])} Q)")
+                            pdf.ln(3.5)
+
+                pdf.ln(3)
+                pbp_lu.close()
+            except Exception as e:
+                print(f"  Warning: Could not compute quarter lineups: {e}")
+                import traceback; traceback.print_exc()
+
+            # ── 3.4 Score Flow Chart ──
+            try:
+                pbp_h2h = sqlite3.connect(DB)
+                pbp_h2h.row_factory = sqlite3.Row
+
+                # Get scoring events for H2H matches
+                h2h_events = {}
+                for gc in h2h_gamecodes:
+                    # Find PBP match_id (format matches gamecode)
+                    evts = [dict(r) for r in pbp_h2h.execute(
+                        "SELECT * FROM pbp_events WHERE gamecode = ? ORDER BY event_seq",
+                        (gc,)
+                    ).fetchall()]
+                    if not evts:
+                        # Try without prefix match
+                        evts = [dict(r) for r in pbp_h2h.execute(
+                            "SELECT * FROM pbp_events WHERE gamecode LIKE ? ORDER BY event_seq",
+                            (f"%{gc.split('_')[-1]}%",)
+                        ).fetchall()]
+                    if evts:
+                        h2h_events[gc] = evts
+
+                if h2h_events:
+                    pdf.subsection("3.4 Score Flow")
+
+                    chart_x = pdf.l_margin
+                    chart_w = pdf.w - pdf.l_margin - pdf.r_margin
+                    chart_h = 30
+                    mid_y = pdf.get_y() + chart_h / 2
+
+                    # Find max differential across all H2H games
+                    max_diff = 1
+                    flow_data = {}  # gc -> [(minute_approx, diff)]
+                    for gc, evts in h2h_events.items():
+                        m = next((mm for mm in h2h_matches if mm["gamecode"] == gc), None)
+                        if not m:
+                            continue
+                        s = team_side(m, TEAM)
+                        points = []
+                        for e in evts:
+                            if e.get("score_a") is not None and e.get("score_b") is not None:
+                                sa, sb = e["score_a"], e["score_b"]
+                                t_sc = sa if s == "A" else sb
+                                o_sc = sb if s == "A" else sa
+                                diff = t_sc - o_sc
+                                q = e.get("quarter", 1) or 1
+                                minute = e.get("minute", 0) or 0
+                                game_min = (q - 1) * 10 + min(minute, 10)
+                                points.append((game_min, diff))
+                                max_diff = max(max_diff, abs(diff))
+                        flow_data[gc] = points
+
+                    scale_y = (chart_h / 2 - 2) / max_diff if max_diff else 1
+                    scale_x = chart_w / 40  # 40 minutes total
+
+                    # Draw baseline and quarter lines
+                    pdf.set_draw_color(200, 200, 200)
+                    pdf.set_line_width(0.2)
+                    pdf.line(chart_x, mid_y, chart_x + chart_w, mid_y)
+                    for q_min in [10, 20, 30]:
+                        qx = chart_x + q_min * scale_x
+                        pdf.set_draw_color(220, 220, 220)
+                        pdf.line(qx, pdf.get_y() - chart_h / 2 + mid_y - pdf.get_y(), qx, mid_y + chart_h / 2 - (mid_y - pdf.get_y()))
+                        # Actually just draw from top to bottom of chart area
+                    for q_min in [10, 20, 30]:
+                        qx = chart_x + q_min * scale_x
+                        pdf.line(qx, mid_y - chart_h / 2, qx, mid_y + chart_h / 2)
+
+                    # Quarter labels
+                    for qi in range(4):
+                        qx = chart_x + qi * 10 * scale_x
+                        pdf.set_font("Arial", "", 5)
+                        pdf.set_text_color(160, 160, 160)
+                        pdf.set_xy(qx, mid_y - chart_h / 2 - 3)
+                        pdf.cell(10 * scale_x, 3, f"Q{qi + 1}", align="C")
+
+                    # Draw flow lines
+                    colors = [(180, 30, 30), (100, 100, 180)]  # red for game 1, blue-gray for game 2
+                    scoring_runs_all = []
+
+                    for gi, (gc, points) in enumerate(flow_data.items()):
+                        if not points:
+                            continue
+                        r, g, b = colors[gi % len(colors)]
+                        pdf.set_draw_color(r, g, b)
+                        pdf.set_line_width(0.4)
+
+                        prev_x = prev_y = None
+                        for game_min, diff in points:
+                            px = chart_x + game_min * scale_x
+                            py = mid_y - diff * scale_y
+                            if prev_x is not None:
+                                pdf.line(prev_x, prev_y, px, py)
+                            prev_x, prev_y = px, py
+
+                        # Detect scoring runs (8+ unanswered)
+                        m = next((mm for mm in h2h_matches if mm["gamecode"] == gc), None)
+                        if m:
+                            s = team_side(m, TEAM)
+                            evts = h2h_events[gc]
+                            run_pts = 0
+                            run_start_min = 0
+                            last_scorer = None
+                            for e in evts:
+                                is_made = e.get("event_type", "").endswith("_MADE")
+                                if not is_made:
+                                    continue
+                                e_team = e.get("team", "")
+                                is_our = (e_team == s)
+                                pts = 0
+                                et = e.get("event_type", "")
+                                if "THREE" in et: pts = 3
+                                elif "FT" in et: pts = 1
+                                elif "CLOSE" in et or "MID" in et or "DUNK" in et: pts = 2
+
+                                if is_our:
+                                    if last_scorer == "us":
+                                        run_pts += pts
+                                    else:
+                                        if run_pts >= 8 and last_scorer == "us":
+                                            q = e.get("quarter", 1) or 1
+                                            scoring_runs_all.append((gc, run_start_min, run_pts, "TEAM"))
+                                        run_pts = pts
+                                        q = e.get("quarter", 1) or 1
+                                        minute = e.get("minute", 0) or 0
+                                        run_start_min = (q - 1) * 10 + min(minute, 10)
+                                    last_scorer = "us"
+                                else:
+                                    if last_scorer == "them":
+                                        run_pts += pts
+                                    else:
+                                        if run_pts >= 8 and last_scorer == "them":
+                                            scoring_runs_all.append((gc, run_start_min, run_pts, "OPP"))
+                                        run_pts = pts
+                                        q = e.get("quarter", 1) or 1
+                                        minute = e.get("minute", 0) or 0
+                                        run_start_min = (q - 1) * 10 + min(minute, 10)
+                                    last_scorer = "them"
+                            # Last run
+                            if run_pts >= 8 and last_scorer:
+                                tag = "TEAM" if last_scorer == "us" else "OPP"
+                                scoring_runs_all.append((gc, run_start_min, run_pts, tag))
+
+                    pdf.set_y(mid_y + chart_h / 2 + 2)
+
+                    # Legend
+                    pdf.set_font("Arial", "", 5.5)
+                    for gi, gc in enumerate(flow_data.keys()):
+                        m = next((mm for mm in h2h_matches if mm["gamecode"] == gc), None)
+                        if m:
+                            r, g, b = colors[gi % len(colors)]
+                            pdf.set_fill_color(r, g, b)
+                            pdf.rect(pdf.get_x(), pdf.get_y() + 0.5, 3, 2, "F")
+                            pdf.set_x(pdf.get_x() + 4)
+                            pdf.set_text_color(80, 80, 80)
+                            s = team_side(m, TEAM)
+                            sc, al = scored(m, s), allowed(m, s)
+                            pdf.cell(50, 3, f"Game {gi + 1}: {m.get('match_date', '')} ({sc}-{al})")
+                            pdf.set_x(pdf.get_x() + 2)
+                    pdf.ln(4)
+
+                    # Scoring runs annotation
+                    if scoring_runs_all:
+                        pdf.set_font("Arial", "I", 6)
+                        pdf.set_text_color(100, 100, 100)
+                        for gc, start_min, pts, who in scoring_runs_all[:4]:  # Max 4
+                            gi = list(flow_data.keys()).index(gc) + 1
+                            q_label = f"Q{start_min // 10 + 1}"
+                            team_label = our_name[:12] if who == "TEAM" else vs_display[:12]
+                            pdf.cell(0, 3, f"  Game {gi} {q_label}: {team_label} {pts}-0 run")
+                            pdf.ln(3)
+                        pdf.ln(2)
+
+                pbp_h2h.close()
+            except Exception as e:
+                print(f"  Warning: Could not load H2H PBP data: {e}")
+
+            # ── 3.5 Player Performance in H2H ──
+            pdf.subsection("3.5 Player Performance in H2H")
+
+            try:
+                pbp_h2h2 = sqlite3.connect(DB)
+                pbp_h2h2.row_factory = sqlite3.Row
+
+                # Aggregate box scores from events for both teams
+                def h2h_box_score(match_ids, team_side_val, matches_ref):
+                    """Compute per-player box scores from H2H events."""
+                    players = {}
+                    for mid in match_ids:
+                        m = next((mm for mm in matches_ref if mm["gamecode"] == mid), None)
+                        if not m:
+                            continue
+                        s = team_side(m, TEAM)
+                        target_side = "A" if (team_side_val == "team" and s == "A") or (team_side_val == "opp" and s == "B") else "B"
+                        if team_side_val == "team":
+                            target_side = s
+                        else:
+                            target_side = "B" if s == "A" else "A"
+
+                        evts = [dict(r) for r in pbp_h2h2.execute(
+                            "SELECT * FROM pbp_events WHERE gamecode = ? AND team = ?",
+                            (mid, target_side)
+                        ).fetchall()]
+
+                        seen_players = set()
+                        for e in evts:
+                            pn = e.get("player_name")
+                            if not pn:
+                                continue
+                            if pn not in players:
+                                players[pn] = {"gp": 0, "pts": 0, "fgm": 0, "fga": 0,
+                                               "3pm": 0, "3pa": 0, "ftm": 0, "fta": 0,
+                                               "oreb": 0, "dreb": 0, "ast": 0, "stl": 0,
+                                               "blk": 0, "tov": 0, "foul": 0,
+                                               "game_pts": []}
+                            et = e.get("event_type", "")
+                            p = players[pn]
+                            if et in ("CLOSE_MADE", "MID_MADE", "DUNK_MADE"):
+                                p["fgm"] += 1; p["fga"] += 1; p["pts"] += 2
+                            elif et in ("CLOSE_MISS", "MID_MISS", "DUNK_MISS"):
+                                p["fga"] += 1
+                            elif et == "THREE_MADE":
+                                p["fgm"] += 1; p["fga"] += 1; p["3pm"] += 1; p["3pa"] += 1; p["pts"] += 3
+                            elif et == "THREE_MISS":
+                                p["fga"] += 1; p["3pa"] += 1
+                            elif et == "FT_MADE":
+                                p["ftm"] += 1; p["fta"] += 1; p["pts"] += 1
+                            elif et == "FT_MISS":
+                                p["fta"] += 1
+                            elif et == "OREB": p["oreb"] += 1
+                            elif et == "DREB": p["dreb"] += 1
+                            elif et == "AST": p["ast"] += 1
+                            elif et == "STL": p["stl"] += 1
+                            elif et in ("BLK", "BLK_RECV"): p["blk"] += 1
+                            elif et == "TOV": p["tov"] += 1
+                            elif et == "FOUL": p["foul"] += 1
+                            seen_players.add(pn)
+
+                        # Track GP
+                        for pn in seen_players:
+                            players[pn]["gp"] += 1
+
+                    return players
+
+                n_h2h = len(h2h_matches)
+
+                for label, side in [(f"{our_name}", "team"), (f"{vs_display}", "opp")]:
+                    box = h2h_box_score(h2h_gamecodes, side, h2h_matches)
+                    if not box:
+                        continue
+
+                    pdf.set_font("Arial", "B", 8)
+                    pdf.set_text_color(120, 120, 120)
+                    pdf.cell(0, 5, label[:30])
+                    pdf.ln(5)
+
+                    p_cols = ["Player", "GP", "PPG", "FG%", "3P%", "RPG", "APG", "SPG", "TOV"]
+                    p_widths = [40, 10, 14, 14, 14, 14, 14, 14, 14]
+                    pdf.table_header(p_cols, p_widths)
+
+                    # Sort by total points
+                    sorted_players = sorted(box.items(), key=lambda x: -x[1]["pts"])
+                    for pn, st in sorted_players[:10]:
+                        gp = st["gp"] or 1
+                        ppg = st["pts"] / gp
+                        fg_pct = (st["fgm"] / st["fga"] * 100) if st["fga"] else 0
+                        three_pct = (st["3pm"] / st["3pa"] * 100) if st["3pa"] else 0
+                        rpg = (st["oreb"] + st["dreb"]) / gp
+                        apg = st["ast"] / gp
+                        spg = st["stl"] / gp
+                        tov = st["tov"] / gp
+
+                        pdf.table_row(
+                            [pn[:22], str(st["gp"]), f"{ppg:.1f}",
+                             f"{fg_pct:.0f}%" if st["fga"] >= 3 else "-",
+                             f"{three_pct:.0f}%" if st["3pa"] >= 2 else "-",
+                             f"{rpg:.1f}", f"{apg:.1f}", f"{spg:.1f}", f"{tov:.1f}"],
+                            p_widths
+                        )
+
+                    pdf.ln(4)
+
+                pbp_h2h2.close()
+            except Exception as e:
+                print(f"  Warning: Could not compute H2H player stats: {e}")
+
+            # ── 3.6 H2H Shot Chart ──
+            try:
+                h2h_shot_conn = sqlite3.connect(DB)
+                h2h_shot_conn.row_factory = sqlite3.Row
+
+                h2h_shots = [dict(r) for r in h2h_shot_conn.execute(
+                    f"SELECT hx, hy, is_made, is_free_throw, zone, player_name, team_id FROM shots "
+                    f"WHERE gamecode IN ({','.join('?' * len(h2h_gamecodes))}) "
+                    f"AND is_free_throw = 0",
+                    h2h_gamecodes
+                ).fetchall()]
+
+                if h2h_shots and our_team_id:
+                    team_shots = [s for s in h2h_shots if s["team_id"] == our_team_id]
+                    opp_shots = [s for s in h2h_shots if s["team_id"] != our_team_id]
+
+                    if team_shots:
+                        pdf.subsection("3.6 H2H Shot Chart")
+
+                        # Zone breakdown table
+                        def zone_stats(shots_list):
+                            zones = {}
+                            for s in shots_list:
+                                sz = classify_sector(s)
+                                if sz not in zones:
+                                    zones[sz] = {"made": 0, "total": 0}
+                                zones[sz]["total"] += 1
+                                if s["is_made"]:
+                                    zones[sz]["made"] += 1
+                            return zones
+
+                        t_zones = zone_stats(team_shots)
+                        o_zones = zone_stats(opp_shots)
+
+                        t_total = sum(z["total"] for z in t_zones.values())
+                        t_made = sum(z["made"] for z in t_zones.values())
+                        t_pct = t_made / t_total * 100 if t_total else 0
+
+                        # Text summary
+                        pdf.set_font("Arial", "", 7.5)
+                        pdf.set_text_color(30, 30, 30)
+
+                        zone_labels = [
+                            ("paint", "Paint"),
+                            ("mid_left", "Mid Left"), ("mid_center", "Mid Center"), ("mid_right", "Mid Right"),
+                            ("corner3_left", "Corner 3 L"), ("corner3_right", "Corner 3 R"),
+                            ("wing3_left", "Wing 3 L"), ("wing3_right", "Wing 3 R"), ("top3", "Top 3"),
+                        ]
+
+                        # Header
+                        pdf.set_font("Arial", "B", 8)
+                        pdf.cell(0, 5, f"{our_name}: {t_made}/{t_total} FG ({t_pct:.1f}%)  |  Based on {len(h2h_gamecodes)} H2H game(s)")
+                        pdf.ln(6)
+
+                        z_cols = ["Zone", f"{our_name[:12]} FG", f"{our_name[:12]} %", f"{vs_display[:12]} FG", f"{vs_display[:12]} %"]
+                        z_widths = [28, 22, 18, 22, 18]
+                        pdf.table_header(z_cols, z_widths)
+
+                        # Find hot/cold zones
+                        best_zone = ("", 0, 0)
+                        worst_zone = ("", 100, 0)
+
+                        for zk, zlbl in zone_labels:
+                            tz = t_zones.get(zk, {"made": 0, "total": 0})
+                            oz = o_zones.get(zk, {"made": 0, "total": 0})
+                            t_p = tz["made"] / tz["total"] * 100 if tz["total"] else 0
+                            o_p = oz["made"] / oz["total"] * 100 if oz["total"] else 0
+
+                            if tz["total"] >= 3 and t_p > best_zone[1]:
+                                best_zone = (zlbl, t_p, tz["total"])
+                            if tz["total"] >= 3 and t_p < worst_zone[1]:
+                                worst_zone = (zlbl, t_p, tz["total"])
+
+                            pdf.table_row(
+                                [zlbl,
+                                 f"{tz['made']}/{tz['total']}" if tz["total"] else "-",
+                                 f"{t_p:.0f}%" if tz["total"] >= 2 else "-",
+                                 f"{oz['made']}/{oz['total']}" if oz["total"] else "-",
+                                 f"{o_p:.0f}%" if oz["total"] >= 2 else "-"],
+                                z_widths
+                            )
+
+                        pdf.ln(3)
+
+                        # Hot/cold zone annotation
+                        if best_zone[0]:
+                            pdf.set_font("Arial", "I", 7)
+                            pdf.set_text_color(60, 160, 60)
+                            pdf.cell(0, 3.5, f"Hot zone: {best_zone[0]} ({best_zone[1]:.0f}%, {best_zone[2]} att)")
+                            pdf.ln(3.5)
+                        if worst_zone[0] and worst_zone[0] != best_zone[0]:
+                            pdf.set_text_color(200, 60, 60)
+                            pdf.cell(0, 3.5, f"Cold zone: {worst_zone[0]} ({worst_zone[1]:.0f}%, {worst_zone[2]} att)")
+                            pdf.ln(3.5)
+
+                h2h_shot_conn.close()
+            except Exception as e:
+                print(f"  Warning: Could not load H2H shot data: {e}")
+
+        else:
+            print(f"  No H2H matches found for {TEAM.strip('%')} vs {VS_TEAM.strip('%')}")
+
     import re as _re2
     team_slug = _re2.sub(r'[^a-z0-9]+', '-', (our_name or TEAM.strip("%")).lower()).strip('-')
-    output_file = f"scout_{team_slug}.pdf"
+    if VS_TEAM:
+        vs_slug = _re2.sub(r'[^a-z0-9]+', '-', VS_TEAM.strip("%").lower()).strip('-')
+        output_file = f"scout_{team_slug}_vs_{vs_slug}.pdf"
+    else:
+        output_file = f"scout_{team_slug}.pdf"
     pdf.output(output_file)
     print(f"Scout report saved to {output_file}")
 
 
 if __name__ == "__main__":
+    VS_TEAM = None
     if len(sys.argv) > 1:
         team_arg = sys.argv[1]
         TEAM = f"%{team_arg}%"
-        print(f"Generating scout report for: {team_arg}")
+        # Parse --vs flag
+        if "--vs" in sys.argv:
+            vs_idx = sys.argv.index("--vs")
+            if vs_idx + 1 < len(sys.argv):
+                vs_arg = sys.argv[vs_idx + 1]
+                VS_TEAM = f"%{vs_arg}%"
+                print(f"Generating scout report for: {team_arg} (vs {vs_arg})")
+            else:
+                print("Error: --vs requires a team name argument")
+                sys.exit(1)
+        else:
+            print(f"Generating scout report for: {team_arg}")
     else:
-        print(f"Usage: python3 {sys.argv[0]} <team_name>")
+        print(f"Usage: python3 {sys.argv[0]} <team_name> [--vs <opponent>]")
         print(f"  e.g.: python3 {sys.argv[0]} Vasas")
-        print(f"        python3 {sys.argv[0]} PVSK")
-        print(f"        python3 {sys.argv[0]} Phoenix")
-        print(f"  Default: Vasas")
+        print(f"        python3 {sys.argv[0]} Vasas --vs TF-BP")
+        sys.exit(1)
     main()
