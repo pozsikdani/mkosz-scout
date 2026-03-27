@@ -1615,7 +1615,7 @@ def main():
         slug = _re.sub(r'[^a-z0-9]+', '-', team_short.lower()).strip('-')
         roster_url = f"https://mkosz.hu/csapat/x2526/{COMP}/0/{slug}"
         print(f"  Warning: no roster URL found, trying fallback: {roster_url}")
-    roster_map = {}  # name -> {jersey, pos, height, birth_year}
+    _raw_roster_map = {}  # name -> {jersey, pos, height, birth_year, pic_url}
     try:
         resp = requests.get(roster_url, timeout=10)
         resp.encoding = "utf-8"
@@ -1624,26 +1624,81 @@ def main():
             cols = row.find_all("td")
             if len(cols) >= 5:
                 jersey = cols[0].get_text(strip=True)
-                # Name is in <a title="..."> inside col 1
                 link = cols[1].find("a")
                 name = link.get("title", "").strip() if link else cols[1].get_text(strip=True)
                 birth = cols[2].get_text(strip=True)
                 pos = cols[3].get_text(strip=True)
                 height = cols[4].get_text(strip=True).replace(" cm", "").replace("cm", "")
-                # Extract photo URL from background-image style
                 import re as _re
                 pic_div = cols[1].find("div", class_="team-players-pic")
                 pic_style = pic_div.get("style", "") if pic_div else ""
                 pic_match = _re.search(r"url\(([^)]+)\)", pic_style)
                 pic_url = pic_match.group(1) if pic_match else ""
-                # Skip placeholder images
                 if "placeholder" in pic_url:
                     pic_url = ""
                 if name:
-                    roster_map[name] = {"jersey": jersey, "pos": pos, "height": height, "birth": birth, "pic_url": pic_url}
-        print(f"  Scraped {len(roster_map)} players from roster page")
+                    _raw_roster_map[name] = {"jersey": jersey, "pos": pos, "height": height, "birth": birth, "pic_url": pic_url}
+        print(f"  Scraped {len(_raw_roster_map)} players from roster page")
     except Exception as e:
         print(f"  Roster scrape failed: {e}")
+
+    # Smart roster lookup with encoding-tolerant fuzzy matching
+    import unicodedata
+    def _norm_name(n):
+        """Normalize name for matching: strip accents, lowercase, remove non-alpha."""
+        # Replace common encoding artifacts
+        n = n.replace("?", "").replace("õ", "ő").replace("û", "ű")
+        # NFD decompose then strip combining marks
+        nfkd = unicodedata.normalize("NFKD", n)
+        ascii_str = "".join(c for c in nfkd if not unicodedata.combining(c))
+        return ascii_str.lower().strip()
+
+    # Build normalized lookup index
+    _roster_norm = {}  # normalized_name -> original_name
+    for rname in _raw_roster_map:
+        _roster_norm[_norm_name(rname)] = rname
+
+    class RosterMap:
+        """Dict-like roster lookup with fuzzy name matching."""
+        def __init__(self, raw, norm):
+            self._raw = raw
+            self._norm = norm
+            self._cache = {}  # pbp_name -> roster_name or None
+        def _resolve(self, key):
+            if key in self._cache:
+                return self._cache[key]
+            # Exact match
+            if key in self._raw:
+                self._cache[key] = key
+                return key
+            # Normalized match
+            nk = _norm_name(key)
+            if nk in self._norm:
+                self._cache[key] = self._norm[nk]
+                return self._norm[nk]
+            # Substring match (for partial names)
+            for norm_k, orig_k in self._norm.items():
+                if nk in norm_k or norm_k in nk:
+                    self._cache[key] = orig_k
+                    return orig_k
+            self._cache[key] = None
+            return None
+        def get(self, key, default=None):
+            resolved = self._resolve(key)
+            return self._raw.get(resolved, default) if resolved else default
+        def __contains__(self, key):
+            return self._resolve(key) is not None
+        def __getitem__(self, key):
+            resolved = self._resolve(key)
+            if resolved:
+                return self._raw[resolved]
+            raise KeyError(key)
+        def __len__(self):
+            return len(self._raw)
+        def __bool__(self):
+            return bool(self._raw)
+
+    roster_map = RosterMap(_raw_roster_map, _roster_norm)
 
     # Fallback roster if scraping fails
     if not roster_map:
