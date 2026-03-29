@@ -3612,12 +3612,7 @@ def main():
                     names = sorted(lu)[:max_names]
                     return " / ".join(short_name(n) for n in names)
 
-                # Part A: Our lineup per quarter per game
-                pdf.set_font("Arial", "B", 8)
-                pdf.set_text_color(100, 100, 100)
-                pdf.cell(0, 5, f"{our_name} — Quarter Lineups")
-                pdf.ln(5)
-
+                # Combined matchup view: our lineup vs opponent lineup per quarter
                 for gi, m in enumerate(h2h_matches):
                     s = team_side(m, TEAM)
                     date_str = (m.get("match_date") or "")
@@ -3626,70 +3621,63 @@ def main():
 
                     pdf.set_font("Arial", "B", 7)
                     pdf.set_text_color(60, 60, 60)
-                    pdf.cell(0, 4, f"Game {gi + 1}: {date_str} ({ha}) — {sc}-{al}")
-                    pdf.ln(4.5)
+                    pdf.cell(0, 4.5, f"Game {gi + 1}: {date_str} ({ha}) — {sc}-{al}")
+                    pdf.ln(5)
+
+                    # Header row
+                    lu_w = 72  # lineup column width
+                    q_w = 8
+                    margin_w = 12
+                    vs_label_w = 8
+                    pdf.set_font("Arial", "B", 5.5)
+                    pdf.set_fill_color(40, 40, 40)
+                    pdf.set_text_color(255, 255, 255)
+                    pdf.cell(q_w, 4, "", fill=True)
+                    pdf.cell(lu_w, 4, f"  {our_name[:20]}", fill=True, align="L")
+                    pdf.cell(margin_w, 4, "+/-", fill=True, align="C")
+                    pdf.cell(lu_w, 4, f"  {vs_display[:20]}", fill=True, align="L")
+                    pdf.ln(4)
 
                     for _, q, our_lu, opp_lu, margin in [x for x in all_q_lineups if x[0] == gi]:
-                        if not our_lu:
+                        if not our_lu and not opp_lu:
                             continue
-                        # Color based on margin
+
+                        # Row background by margin
                         if margin > 0:
-                            pdf.set_fill_color(210, 245, 210)
+                            bg = (210, 245, 210)
+                        elif margin < 0:
+                            bg = (250, 215, 215)
+                        else:
+                            bg = (240, 240, 240)
+                        pdf.set_fill_color(*bg)
+
+                        # Q label
+                        pdf.set_font("Arial", "B", 6)
+                        pdf.set_text_color(80, 80, 80)
+                        pdf.cell(q_w, 4.5, f"Q{q}", fill=True, align="C")
+
+                        # Our lineup
+                        pdf.set_font("Arial", "", 5.5)
+                        pdf.set_text_color(30, 30, 30)
+                        pdf.cell(lu_w, 4.5, f" {lineup_str(our_lu)}" if our_lu else " -", fill=True)
+
+                        # Margin badge
+                        if margin > 0:
                             pdf.set_text_color(30, 120, 30)
                         elif margin < 0:
-                            pdf.set_fill_color(250, 215, 215)
                             pdf.set_text_color(180, 40, 40)
                         else:
-                            pdf.set_fill_color(240, 240, 240)
                             pdf.set_text_color(100, 100, 100)
+                        pdf.set_font("Arial", "B", 6.5)
+                        pdf.cell(margin_w, 4.5, f"{margin:+d}", fill=True, align="C")
 
-                        pdf.set_font("Arial", "B", 6.5)
-                        pdf.cell(10, 4.5, f"Q{q}", fill=True, align="C")
-                        pdf.set_font("Arial", "", 6.5)
-                        pdf.cell(110, 4.5, f"  {lineup_str(our_lu)}", fill=True)
-                        pdf.set_font("Arial", "B", 6.5)
-                        pdf.cell(14, 4.5, f"{margin:+d}", fill=True, align="C")
+                        # Opponent lineup
+                        pdf.set_font("Arial", "", 5.5)
+                        pdf.set_text_color(30, 30, 30)
+                        pdf.cell(lu_w, 4.5, f" {lineup_str(opp_lu)}" if opp_lu else " -", fill=True)
+
                         pdf.ln(4.5)
-                    pdf.ln(2)
-
-                # Part B: Opponent lineup matchups — focus on losing quarters
-                pdf.set_font("Arial", "B", 8)
-                pdf.set_text_color(100, 100, 100)
-                pdf.cell(0, 5, f"Opponent Lineups ({vs_display}) — Quarter Matchups")
-                pdf.ln(5)
-
-                for gi, m in enumerate(h2h_matches):
-                    s = team_side(m, TEAM)
-                    date_str = (m.get("match_date") or "")
-                    sc, al = scored(m, s), allowed(m, s)
-                    ha = "H" if s == "A" else "@"
-
-                    pdf.set_font("Arial", "B", 7)
-                    pdf.set_text_color(60, 60, 60)
-                    pdf.cell(0, 4, f"Game {gi + 1}: {date_str} ({ha}) — {sc}-{al}")
-                    pdf.ln(4.5)
-
-                    for _, q, our_lu, opp_lu, margin in [x for x in all_q_lineups if x[0] == gi]:
-                        if not opp_lu:
-                            continue
-                        if margin > 0:
-                            pdf.set_fill_color(210, 245, 210)
-                            pdf.set_text_color(30, 120, 30)
-                        elif margin < 0:
-                            pdf.set_fill_color(250, 215, 215)
-                            pdf.set_text_color(180, 40, 40)
-                        else:
-                            pdf.set_fill_color(240, 240, 240)
-                            pdf.set_text_color(100, 100, 100)
-
-                        pdf.set_font("Arial", "B", 6.5)
-                        pdf.cell(10, 4.5, f"Q{q}", fill=True, align="C")
-                        pdf.set_font("Arial", "", 6.5)
-                        pdf.cell(110, 4.5, f"  {lineup_str(opp_lu)}", fill=True)
-                        pdf.set_font("Arial", "B", 6.5)
-                        pdf.cell(14, 4.5, f"{margin:+d}", fill=True, align="C")
-                        pdf.ln(4.5)
-                    pdf.ln(2)
+                    pdf.ln(3)
 
                 # Best/worst lineup summary
                 if all_q_lineups:

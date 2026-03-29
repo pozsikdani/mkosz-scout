@@ -5,28 +5,26 @@
 - GitHub: `pozsikdani/mkosz-scout`
 
 ## Dependencies
-- **mkosz-stats DB**: `/Users/danipozsik/Desktop/claudecode/mkosz-stats/mkosz_stats.sqlite` — shots + matches (shotchart API data)
-- **mkosz-play-by-play DB**: `/Users/danipozsik/Desktop/claudecode/mkosz-play-by-play/pbp.sqlite` — events, substitutions, matches (PBP scraper data)
-- **MKOSZ website**: `mkosz.hu` — live standings, roster scraping (team pages, player photos)
+- **mkosz-stats DB**: `/Users/danipozsik/Desktop/claudecode/mkosz-stats/mkosz_stats.sqlite` — **unified database** containing shots (shotchart API), PBP events & substitutions, and matches. Single DB for all data.
+- **MKOSZ website**: `mkosz.hu` — live standings (authoritative W-L record), match results (authoritative scores), roster scraping (player photos, height, position)
 
 ## Key File
-- `mockup_s1s2.py` — **The main scout report generator** (~3100 lines). Generates a full PDF scout report for any NB1B team.
+- `mockup_s1s2.py` — **The main scout report generator** (~4200 lines). Generates a full PDF scout report for any NB1B team, with optional head-to-head analysis.
 
 ## Usage
 ```bash
-python3 mockup_s1s2.py Vasas          # Generate Vasas report
-python3 mockup_s1s2.py "TF-BP"        # Generate TF-BP report
-python3 mockup_s1s2.py Phoenix        # Any team name substring works
-python3 mockup_s1s2.py Jászberény     # Hungarian chars OK
+python3 mockup_s1s2.py Vasas              # Generate Vasas report (Section 1+2)
+python3 mockup_s1s2.py "TF-BP"            # Any team name substring works
+python3 mockup_s1s2.py Vasas --vs TF-BP   # H2H report: Vasas scouted, TF-BP opponent (Section 1+2+3)
 ```
-Output: `scout_{team-slug}.pdf`
+Output: `scout_{team-slug}.pdf` or `scout_{slug}_vs_{vs-slug}.pdf`
 
-## Report Structure (2 Sections, ~7 pages)
+## Report Structure (3 Sections, ~7-10 pages)
 
 ### Section 1: Team Overview & Season Context
 - **1.1 Standings** — Full league table (scraped live from mkosz.hu) + summary card (ALL/HOME/AWAY splits: Record, PPG, OPPG, Margin, vs .500+, vs .500-, Last 5)
-- **1.2 Season Margin Trend** — Bar chart (green W / red L), H/A labels, upset markers (*), 5-game rolling avg line
-- **1.3 Last 5 Games** — Table with Date, H/@, Opponent, Score, W/L, +/-, UPS (upset marker)
+- **1.2 Season Margin Trend** — Bar chart (green W / red L), H/A labels, upset markers (*), 5-game rolling avg line. **Match results scraped from mkosz.hu** (authoritative).
+- **1.3 Last 5 Games** — Table with Date, H/@, Opponent, Score, W/L, +/-, UPS (upset marker). **From mkosz.hu scrape.**
 - **1.4 Season Shot Chart** — Dual view: dot chart (left) + zone heatmap (right, 9 zones: paint, left/right mid, left/right corner 3, left/right wing 3, top 3), green/red coloring by efficiency
 
 ### Section 2: Rotation & Personnel
@@ -39,17 +37,25 @@ Output: `scout_{team-slug}.pdf`
   - Scoring panel (right side): PPG + FG% with "top X%" badges (green/gray/red), mini half-court zone heatmap (9 zones matching team shotchart), FT line
   - Scout note (italic), strength tags (dark pills)
 
+### Section 3: Head-to-Head Analysis (optional, `--vs` flag)
+- **3.1 Match History** — H2H record summary + game table with quarter-by-quarter coloring (green/red per quarter margin)
+- **3.2 Quarter-by-Quarter Breakdown** — Color-coded margin table (rows=games, cols=Q1-Q4+Total, AVG row)
+- **3.3 Quarter Lineup Analysis** — Combined matchup view: each row shows our lineup | margin | opponent lineup per quarter. Best/worst/toughest lineup summary below.
+- **3.4 Score Flow** — Running score differential line chart with scoring run annotations (8+ point runs)
+- **3.5 Player Performance in H2H** — Box scores for both teams from H2H matches
+- **3.6 H2H Shot Chart** — Zone breakdown table with hot/cold zone analysis
+
 ## Key Technical Details
 
 ### Data Sources
 - **Standings + Record**: scraped from `mkosz.hu/bajnoksag/x2526/hun2a` — **authoritative source** for W-L record, home/away record, streak. The standings table is always correct even when DB data lags behind.
 - **Match results (scores)**: scraped from `mkosz.hu/bajnoksag-musor/x2526/hun2a/phase/0/csapat/{team_id}` — **authoritative source** for per-game scores used in margin trend, PPG/OPPG, Last 5. Team ID extracted from standings team URL. Falls back to DB if scrape fails.
 - **Roster** (height, position, photos): scraped from team page URL found in standings (e.g., `mkosz.hu/csapat/x2526/hun2a/9233/vasas-akademia`)
-- **Shot charts**: `mkosz_stats.sqlite` shots table (hx, hy, is_successfull, player_name, team_id)
-- **PBP events**: `pbp.sqlite` events table (20 event types: CLOSE_MADE/MISS, THREE_MADE/MISS, AST, DREB, OREB, STL, BLK, TOV, FOUL, etc.)
-- **Substitutions**: `pbp.sqlite` substitutions table → used for starter detection, MPG estimation, rotation patterns, lineup tracking
+- **Shot charts**: `mkosz_stats.sqlite` → `shots` table (hx, hy, is_successfull, player_name, team_id)
+- **PBP events**: `mkosz_stats.sqlite` → `pbp_events` table (20 event types: CLOSE_MADE/MISS, THREE_MADE/MISS, AST, DREB, OREB, STL, BLK, TOV, FOUL, etc.)
+- **Substitutions**: `mkosz_stats.sqlite` → `substitutions` table → used for starter detection, MPG estimation, rotation patterns, lineup tracking
 - **FT enrichment**: FT data comes from PBP events (not shotchart API, which undercounts FTs)
-- **DB matches** (`mkosz_stats.sqlite`): used as fallback for match results if MKOSZ scraping fails, and for quarter scores (not available from scrape)
+- **DB matches** (`mkosz_stats.sqlite` → `matches`): used as fallback for match results if MKOSZ scraping fails, and for quarter scores (not available from scrape)
 
 ### Starter Detection (last 8 games)
 - From substitutions: players subbed OUT before being subbed IN = starters
@@ -97,7 +103,6 @@ Output: `scout_{team-slug}.pdf`
 - **Legacy files**: `generate_nb1b_scout.py`, `generate_scout_report.py`, `mockup_section2.py` are old iterations — `mockup_s1s2.py` is the current single-file generator
 
 ## Next Steps (potential)
-- Section 3: Head-to-head analysis (vs specific opponent)
 - Section 4: Defensive tendencies
 - Individual player shotcharts (already have per-player zone data)
 - Auto-generated scout notes using AI

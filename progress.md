@@ -27,7 +27,7 @@
 **Section 3: Head-to-Head Analysis** (opcionális, `--vs` flag)
 - 3.1 Match History — H2H mérleg, meccs táblázat negyedenkénti bontással (zöld/piros per-negyed háttér)
 - 3.2 Quarter-by-Quarter Breakdown — színezett margin tábla (sorok=meccsek, oszlopok=Q1-Q4+Total, AVG sor)
-- 3.3 Quarter Lineup Analysis — saját + ellenfél lineup-ok negyedenként margin-nal, best/worst/toughest summary
+- 3.3 Quarter Lineup Analysis — combined matchup view: egy sorban saját lineup | margin | ellenfél lineup negyedenként. Best/worst/toughest lineup summary.
 - 3.4 Score Flow — futó pontkülönbség vonaldiagram, scoring run annotációk
 - 3.5 Player Performance in H2H — box score mindkét csapat játékosaira a H2H meccsekből
 - 3.6 H2H Shot Chart — zóna breakdown tábla hot/cold zone elemzéssel
@@ -78,12 +78,11 @@
 3. Scout note-ok minőségének javítása (jelenleg formulaic — lehetne egyedibb, kontextus-érzékenyebb)
 
 ### Új szekciók
-4. **Section 3: Head-to-Head** — adott ellenfél elleni meccsek részletes elemzése
-5. **Section 4: Defensive Tendencies** — védekezési szokások (opponens shotchart, zóna-védekezés)
-6. **Egyéni játékos shotchart** — per-player zone heatmap már megvan, de külön oldalon is lehetne
+4. **Section 4: Defensive Tendencies** — védekezési szokások (opponens shotchart, zóna-védekezés)
+5. **Egyéni játékos shotchart** — per-player zone heatmap már megvan, de külön oldalon is lehetne
 
 ### Hosszabb távú
-7. NB2 scout report sablon (más adatmélység — nincs PBP, csak scoresheet)
-8. COMP paraméterezés (hun2b Zöld csoport, hun_univn MEFOB támogatás)
-9. AI-generált scout note-ok (LLM-alapú elemzés a stat profilból)
-10. Automatikus generálás GitHub Actions-szel (heti frissítés)
+6. NB2 scout report sablon (más adatmélység — nincs PBP, csak scoresheet)
+7. COMP paraméterezés (hun2b Zöld csoport, hun_univn MEFOB támogatás)
+8. AI-generált scout note-ok (LLM-alapú elemzés a stat profilból)
+9. Automatikus generálás GitHub Actions-szel (heti frissítés)
