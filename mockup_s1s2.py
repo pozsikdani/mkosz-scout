@@ -225,11 +225,12 @@ def opp_name(m, s):
     return m["team_b_name"] if s == "A" else m["team_a_name"]
 
 
-def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_path=None, height=None, pos=None, strengths=None, player_zones=None, percentiles=None):
+def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_path=None, height=None, pos=None, strengths=None, player_zones=None, percentiles=None, player_shots=None):
     """Render a player card with optional photo, strength tags, zone heatmap, and league percentiles.
     strengths: list of (label, color_tuple)
     player_zones: dict of zone_key -> {"made": N, "total": N} (same format as team subzone_data)
     percentiles: dict mapping stat key to percentile 0-100 (e.g. {'ppg': 75, 'apg': 87})
+    player_shots: list of dicts with hx, hy, is_made, is_free_throw — raw shot attempts for dot overlay
     """
     x0 = pdf.l_margin
     w = pdf.w - pdf.l_margin - pdf.r_margin
@@ -318,22 +319,39 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
     pdf.set_text_color(120, 120, 120)
     pdf.cell(role_w, 5, role_line, align="R")
 
-    # --- LEFT SIDE: Non-scoring stats ---
-    stat_labels = ["MPG", "RPG", "APG", "TOV", "PF"]
-    stat_keys =   ["mpg", "rpg", "apg", "tpg", "fpg"]
-    stat_vals = [stats.get(k, "-") for k in stat_keys]
-    stat_pct_keys = ["mpg", "rpg", "apg", "tpg", "fpg"]
-    col_w = left_w / len(stat_labels)
+    # --- LEFT SIDE: Non-scoring stats (6 columns) ---
+    stat_labels = ["MPG", "RPG", "PF", "APG", "TOV", "A/TO"]
+    stat_keys =   ["mpg", "rpg", "fpg", "apg", "tpg", "_ato"]
+    stat_pct_keys = ["mpg", "rpg", "fpg", "apg", "tpg", None]
+    # Compute AST/TO ratio
+    try:
+        _ato = round(float(stats.get("apg", 0)) / float(stats.get("tpg", 0)), 1) if float(stats.get("tpg", 0)) > 0 else 0
+        _ato_str = f"{_ato:.1f}"
+    except (ValueError, TypeError):
+        _ato_str = "-"
+    stat_vals = [stats.get(k, "-") for k in stat_keys[:5]] + [_ato_str]
+    col_w = left_w / 6
     y_s = y_start + 10
 
-    pdf.set_font("Arial", "B", 6)
+    # Draw thin border around APG/TOV/A-TO group (columns 3-5, 0-indexed)
+    group_x = cx + 3 * col_w - 0.5
+    group_w = 3 * col_w + 1
+    group_y = y_s - 0.5
+    group_h = 12
+    pdf.set_draw_color(180, 180, 180)
+    pdf.set_line_width(0.25)
+    pdf.rect(group_x, group_y, group_w, group_h, "D")
+
+    # Labels
+    pdf.set_font("Arial", "B", 5.5)
     pdf.set_text_color(110, 110, 110)
     for i, lbl in enumerate(stat_labels):
         pdf.set_xy(cx + i * col_w, y_s)
         pdf.cell(col_w, 3.5, lbl, align="C")
 
-    pdf.set_font("Arial", "B", 9)
+    # Values + badges
     for i, val in enumerate(stat_vals):
+        pdf.set_font("Arial", "B", 8)
         pdf.set_xy(cx + i * col_w, y_s + 3.5)
         is_bad = False
         try:
@@ -342,35 +360,31 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
         except (ValueError, TypeError):
             pass
         pdf.set_text_color(200, 60, 60) if is_bad else pdf.set_text_color(30, 30, 30)
-        pdf.cell(col_w, 5, str(val), align="C")
+        pdf.cell(col_w, 4.5, str(val), align="C")
 
-        # Percentile mini bar
+        # Percentile "top X%" badge
         pct_key = stat_pct_keys[i]
         if percentiles and pct_key and pct_key in percentiles:
             pctv = percentiles[pct_key]
-            bar_w = col_w * 0.75
-            bar_h = 1.5
-            bar_x = cx + i * col_w + (col_w - bar_w) / 2
-            bar_y = y_s + 8.5
-            pdf.set_fill_color(220, 220, 220)
-            pdf.rect(bar_x, bar_y, bar_w, bar_h, "F")
             invert = stat_labels[i] in ("TOV", "PF")
             display_pct = 100 - pctv if invert else pctv
             if display_pct >= 70:
-                pr, pg, pb = 0, 160, 60
-            elif display_pct >= 40:
-                pr, pg, pb = 200, 160, 30
+                cr, cg, cb = 34, 139, 34
+            elif display_pct <= 30:
+                cr, cg, cb = 200, 60, 50
             else:
-                pr, pg, pb = 200, 60, 50
-            fill_w = (pctv / 100.0) * bar_w
-            pdf.set_fill_color(pr, pg, pb)
-            pdf.rect(bar_x, bar_y, fill_w, bar_h, "F")
-
-    # Note (left side, below stats)
-    pdf.set_xy(cx, y_s + 11)
-    pdf.set_font("Arial", "I", 7)
-    pdf.set_text_color(90, 90, 90)
-    pdf.multi_cell(left_w, 3.5, note)
+                cr, cg, cb = 140, 140, 140
+            badge_text = f"top {100 - display_pct}%"
+            pdf.set_font("Arial", "B", 4)
+            btw = pdf.get_string_width(badge_text) + 2
+            bth = 2.5
+            btx = cx + i * col_w + (col_w - btw) / 2
+            bty = y_s + 8
+            pdf.set_fill_color(cr, cg, cb)
+            pdf.rect(btx, bty, btw, bth, "F")
+            pdf.set_text_color(255, 255, 255)
+            pdf.set_xy(btx, bty + 0.15)
+            pdf.cell(btw, bth - 0.3, badge_text, align="C")
 
     # Strength tags (left side, bottom) — uniform dark gray
     if strengths:
@@ -402,10 +416,11 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
         pdf.set_fill_color(180, 30, 30)
         pdf.rect(sp_x, sp_y, 0.5, sp_h, "F")
 
-        # Panel header: PPG and FG% side by side, each with own badge
+        # Panel header: PPG, FG%, 3FG% side by side, each with own badge
         ppg_val = stats.get('ppg', '-')
         fg_val = stats.get('fg', '-')
-        half_w = (sp_w - 2) / 2
+        tp_val = stats.get('3p', '-')
+        third_w = (sp_w - 2) / 3
 
         def _top_badge(pdf, val_text, val_font_size, pct_key, bx, by, bw):
             """Draw value + colored top% badge below it.
@@ -437,19 +452,26 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
                 pdf.set_xy(btx, bty + 0.2)
                 pdf.cell(btw, bth - 0.4, badge_text, align="C")
 
-        # PPG column (left half)
+        # PPG column (left third)
         pdf.set_xy(sp_x + 1, sp_y + 1)
-        pdf.set_font("Arial", "", 5)
+        pdf.set_font("Arial", "", 4.5)
         pdf.set_text_color(120, 120, 120)
-        pdf.cell(half_w, 2.5, "PPG", align="C")
-        _top_badge(pdf, f"{ppg_val}", 9, 'ppg', sp_x + 1, sp_y + 3.5, half_w)
+        pdf.cell(third_w, 2.5, "PPG", align="C")
+        _top_badge(pdf, f"{ppg_val}", 8, 'ppg', sp_x + 1, sp_y + 3.5, third_w)
 
-        # FG% column (right half)
-        pdf.set_xy(sp_x + 1 + half_w, sp_y + 1)
-        pdf.set_font("Arial", "", 5)
+        # FG% column (middle third)
+        pdf.set_xy(sp_x + 1 + third_w, sp_y + 1)
+        pdf.set_font("Arial", "", 4.5)
         pdf.set_text_color(120, 120, 120)
-        pdf.cell(half_w, 2.5, "FG%", align="C")
-        _top_badge(pdf, f"{fg_val}%", 9, 'fg', sp_x + 1 + half_w, sp_y + 3.5, half_w)
+        pdf.cell(third_w, 2.5, "FG%", align="C")
+        _top_badge(pdf, f"{fg_val}%", 8, 'fg', sp_x + 1 + third_w, sp_y + 3.5, third_w)
+
+        # 3FG% column (right third)
+        pdf.set_xy(sp_x + 1 + 2 * third_w, sp_y + 1)
+        pdf.set_font("Arial", "", 4.5)
+        pdf.set_text_color(120, 120, 120)
+        pdf.cell(third_w, 2.5, "3FG%", align="C")
+        _top_badge(pdf, f"{tp_val}%", 8, 'tp', sp_x + 1 + 2 * third_w, sp_y + 3.5, third_w)
 
         # ── Mini zone heatmap court (same zone system as section 1.4) ──
         def _sz_pct(key):
@@ -674,27 +696,54 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
         pdf.line(basket_cx - bb_w / 2, zc_y + 0.5, basket_cx + bb_w / 2, zc_y + 0.5)
         pdf.set_line_width(0.3)
 
-        # ── Zone labels (white boxes with made/total and pct%) ──
+        # ── Shot dots overlay (actual shot attempts) — drawn BEFORE labels ──
+        if player_shots:
+            dot_r = 0.4  # dot radius in mm
+            for shot in player_shots:
+                if shot.get("is_free_throw"):
+                    continue  # skip FTs — no court position
+                hx = shot.get("hx")
+                hy = shot.get("hy")
+                if hx is None or hy is None:
+                    continue
+                # Convert hx/hy (0-100 percentage) to court coordinates
+                dx = zc_x + (hx / 100.0) * zc_w
+                dy = zc_y + (hy / 100.0) * zc_h
+                # Clip to court bounds
+                if dx < zc_x or dx > zc_x + zc_w or dy < zc_y or dy > zc_y + zc_h:
+                    continue
+                if shot.get("is_made"):
+                    pdf.set_fill_color(34, 139, 34)   # green = made
+                else:
+                    pdf.set_fill_color(220, 50, 50)    # red = missed
+                pdf.set_draw_color(255, 255, 255)
+                pdf.set_line_width(0.1)
+                pdf.ellipse(dx - dot_r, dy - dot_r, dot_r * 2, dot_r * 2, "DF")
+
+        # ── Zone labels (inline text on top of dots, no panel) ──
         def _draw_zone_label(lcx, lcy, key, fs_pct=5.5, fs_ratio=4):
             m, t, p = _sz_pct(key)
             if t == 0:
                 return
-            box_w = 9
-            box_h = 5
-            bx = lcx - box_w / 2
-            by = lcy - box_h / 2
-            pdf.set_fill_color(255, 255, 255)
-            pdf.set_draw_color(200, 200, 200)
-            pdf.set_line_width(0.1)
-            pdf.rect(bx, by, box_w, box_h, "DF")
-            pdf.set_font("Arial", "", fs_ratio)
-            pdf.set_text_color(80, 80, 80)
-            pdf.set_xy(bx, by + 0.3)
-            pdf.cell(box_w, 2.2, f"{m}/{t}", align="C")
+            label_w = 10
+            # Percentage (bold, white text with dark outline for readability)
             pdf.set_font("Arial", "B", fs_pct)
-            pdf.set_text_color(30, 30, 30)
-            pdf.set_xy(bx, by + 2.5)
-            pdf.cell(box_w, 2.5, f"{p:.0f}%", align="C")
+            for ox, oy in [(-0.15, 0), (0.15, 0), (0, -0.15), (0, 0.15)]:
+                pdf.set_text_color(30, 30, 30)
+                pdf.set_xy(lcx - label_w / 2 + ox, lcy - 2 + oy)
+                pdf.cell(label_w, 2.5, f"{p:.0f}%", align="C")
+            pdf.set_text_color(255, 255, 255)
+            pdf.set_xy(lcx - label_w / 2, lcy - 2)
+            pdf.cell(label_w, 2.5, f"{p:.0f}%", align="C")
+            # Ratio (smaller, below)
+            pdf.set_font("Arial", "", fs_ratio)
+            for ox, oy in [(-0.1, 0), (0.1, 0), (0, -0.1), (0, 0.1)]:
+                pdf.set_text_color(40, 40, 40)
+                pdf.set_xy(lcx - label_w / 2 + ox, lcy + 0.3 + oy)
+                pdf.cell(label_w, 2, f"{m}/{t}", align="C")
+            pdf.set_text_color(220, 220, 220)
+            pdf.set_xy(lcx - label_w / 2, lcy + 0.3)
+            pdf.cell(label_w, 2, f"{m}/{t}", align="C")
 
         # Paint
         _draw_zone_label(basket_cx, zc_y + zp_h * 0.55, "paint", 6, 4)
@@ -782,9 +831,13 @@ def main():
                             home_rec = cells[11] if len(cells) > 11 else ""
                             away_rec = cells[12] if len(cells) > 12 else ""
                             last5 = cells[13] if len(cells) > 13 else ""
+                            # Dob (scored total) and Kap (allowed total)
+                            scored_total = int(cells[8]) if len(cells) > 8 and cells[8].isdigit() else 0
+                            allowed_total = int(cells[9]) if len(cells) > 9 and cells[9].isdigit() else 0
                             standings.append({
                                 "rank": rank, "team": team_name,
                                 "gp": gp, "w": wins, "l": losses,
+                                "scored": scored_total, "allowed": allowed_total,
                                 "streak": streak, "home": home_rec,
                                 "away": away_rec, "last5": last5,
                                 "team_url": team_href,
@@ -1028,11 +1081,13 @@ def main():
     pdf.ln(5)
 
     for s in standings:
-        is_us = TEAM.strip("%") in s["team"]
+        _s_team_q = TEAM.strip("%").replace("-", " ").lower()
+        is_us = _s_team_q in s["team"].lower()
         pdf.set_font("Arial", "", 6)
         if is_us:
-            pdf.set_fill_color(255, 240, 240)
-            pdf.set_text_color(180, 30, 30)
+            pdf.set_fill_color(230, 230, 235)
+            pdf.set_text_color(40, 40, 40)
+            pdf.set_font("Arial", "B", 6)
         else:
             pdf.set_fill_color(255, 255, 255)
             pdf.set_text_color(30, 30, 30)
@@ -1051,16 +1106,22 @@ def main():
     bh = table_end_y - summary_y
     pdf.set_fill_color(248, 248, 252)
     pdf.rect(summary_x, summary_y, bw, bh, "F")
-    pdf.set_fill_color(180, 30, 30)
+    pdf.set_fill_color(160, 160, 165)
     pdf.rect(summary_x, summary_y, 2, bh, "F")
 
     cx = summary_x + 5
     cy = summary_y + 3
 
+    # W-L record with colored numbers: W=green, dash=gray, L=red
     pdf.set_xy(cx, cy)
     pdf.set_font("Arial", "B", 16)
-    pdf.set_text_color(180, 30, 30)
-    pdf.cell(bw - 8, 7, f"{wins}-{losses}")
+    pdf.set_text_color(34, 139, 34)
+    w_str = str(wins)
+    pdf.cell(pdf.get_string_width(w_str), 7, w_str)
+    pdf.set_text_color(120, 120, 120)
+    pdf.cell(pdf.get_string_width("-"), 7, "-")
+    pdf.set_text_color(200, 60, 50)
+    pdf.cell(pdf.get_string_width(str(losses)), 7, str(losses))
     cy += 8
 
     pdf.set_xy(cx, cy)
@@ -1507,6 +1568,16 @@ def main():
             pzd[zone_key]["total"] += 1
             if s["is_made"]:
                 pzd[zone_key]["made"] += 1
+        # Build per-player raw shot lists for dot overlay on mini-court
+        player_shots_raw = {}  # player_name -> list of shot dicts
+        for s in all_player_shots:
+            pname = s["player_name"]
+            if not pname:
+                continue
+            if pname not in player_shots_raw:
+                player_shots_raw[pname] = []
+            player_shots_raw[pname].append(s)
+
         # Enrich FT data from PBP events (shotchart API has unreliable FT data)
         try:
             pbp_ft = sqlite3.connect(DB)
@@ -1811,6 +1882,229 @@ def main():
         pdf.cell(0, 3, f"Left: shot locations. Right: zone FG% heatmap (green=efficient, red=weak). {total_made}/{total_att} FG ({total_pct:.1f}%). FT excluded.")
         pdf.set_y(court_y + court_h + 6)
         pdf.set_auto_page_break(auto=True, margin=20)
+
+    # ── §1.5 LEAGUE COMPARISON ─────────────────────────────────
+    # Aggregate team-level stats from PBP events for all teams in the competition
+    try:
+        lc_conn = sqlite3.connect(DB)
+        lc_conn.row_factory = sqlite3.Row
+
+        # Team-level PBP stats aggregation
+        lc_rows = [dict(r) for r in lc_conn.execute("""
+            SELECT
+                CASE WHEN e.team = 'A' THEN m.team_a_name ELSE m.team_b_name END as team_name,
+                COUNT(DISTINCT m.gamecode) as gp,
+                SUM(CASE WHEN e.event_type IN ('CLOSE_MADE','MID_MADE','DUNK_MADE','THREE_MADE') THEN 1 ELSE 0 END) as fgm,
+                SUM(CASE WHEN e.event_type IN ('CLOSE_MADE','CLOSE_MISS','MID_MADE','MID_MISS','DUNK_MADE','DUNK_MISS','THREE_MADE','THREE_MISS') THEN 1 ELSE 0 END) as fga,
+                SUM(CASE WHEN e.event_type = 'THREE_MADE' THEN 1 ELSE 0 END) as tpm,
+                SUM(CASE WHEN e.event_type IN ('THREE_MADE','THREE_MISS') THEN 1 ELSE 0 END) as tpa,
+                SUM(CASE WHEN e.event_type = 'FT_MADE' THEN 1 ELSE 0 END) as ftm,
+                SUM(CASE WHEN e.event_type IN ('FT_MADE','FT_MISS') THEN 1 ELSE 0 END) as fta,
+                SUM(CASE WHEN e.event_type = 'OREB' THEN 1 ELSE 0 END) as oreb,
+                SUM(CASE WHEN e.event_type IN ('OREB','DREB') THEN 1 ELSE 0 END) as reb,
+                SUM(CASE WHEN e.event_type = 'AST' THEN 1 ELSE 0 END) as ast,
+                SUM(CASE WHEN e.event_type = 'TOV' THEN 1 ELSE 0 END) as tov,
+                SUM(CASE WHEN e.event_type = 'STL' THEN 1 ELSE 0 END) as stl,
+                SUM(CASE WHEN e.event_type = 'BLK' THEN 1 ELSE 0 END) as blk
+            FROM pbp_events e
+            JOIN matches m ON e.gamecode = m.gamecode
+            WHERE m.comp_code = ?
+              AND m.score_a > 0
+              AND e.event_type != 'UNKNOWN'
+            GROUP BY team_name
+        """, (COMP,)).fetchall()]
+        lc_conn.close()
+
+        # Merge duplicate team names (encoding variants + name changes)
+        # Use first 10 lowercase chars as merge key to handle variants like
+        # BKG PRIMA / BKG PRIMA Akadémia, Phoenix-MT FÓT / Fót,
+        # EBH-Salgótarján / Salgótarjáni, Tiszaújvárosi variants
+        def _lc_merge_key(tn):
+            k = tn.lower().replace("õ", "ő").replace("?", "ő").replace("-", " ")
+            # Special cases
+            if "salgó" in k or "salg" in k:
+                return "salgotarjan"
+            if k.startswith("bkg prima"):
+                return "bkg prima"
+            return k[:12]
+
+        lc_merged = {}
+        for row in lc_rows:
+            tn = row["team_name"]
+            if not tn:
+                continue
+            key = _lc_merge_key(tn)
+            if key not in lc_merged:
+                lc_merged[key] = dict(row)
+            else:
+                existing = lc_merged[key]
+                for k in ["gp", "fgm", "fga", "tpm", "tpa", "ftm", "fta", "oreb", "reb", "ast", "tov", "stl", "blk"]:
+                    existing[k] = existing[k] + row[k]
+                # Keep the longer/nicer name
+                if len(tn) > len(existing["team_name"]):
+                    existing["team_name"] = tn
+        lc_teams = list(lc_merged.values())
+
+        # Add PPG/OPPG from standings if available
+        for lt in lc_teams:
+            tn = lt["team_name"]
+            gp = lt["gp"] or 1
+            # Try to find in standings — use flexible matching
+            _lt_q = tn.lower().replace("-", " ").replace("õ", "ő").replace("?", "")
+            st_match = None
+            for s in standings:
+                _st_q = s["team"].lower().replace("-", " ")
+                if _lt_q[:10] in _st_q or _st_q[:10] in _lt_q:
+                    st_match = s
+                    break
+            if st_match:
+                lt["short_name"] = st_match["team"]
+                # Compute PPG/OPPG from standings scored/allowed if available
+                st_gp = (st_match.get("w", 0) or 0) + (st_match.get("l", 0) or 0)
+                if st_gp > 0 and st_match.get("scored"):
+                    lt["ppg"] = round(st_match["scored"] / st_gp, 1)
+                    lt["oppg"] = round(st_match["allowed"] / st_gp, 1) if st_match.get("allowed") else 0
+                    lt["nrtg"] = round(lt["ppg"] - lt["oppg"], 1)
+                else:
+                    lt["ppg"] = 0
+                    lt["oppg"] = 0
+                    lt["nrtg"] = 0
+            else:
+                lt["short_name"] = tn[:20]
+                lt["ppg"] = 0
+                lt["oppg"] = 0
+                lt["nrtg"] = 0
+
+            # Compute per-game and percentage stats
+            # PACE = possessions per game. Poss ≈ FGA + 0.44*FTA + TOV - OREB
+            poss = lt["fga"] + 0.44 * lt["fta"] + lt["tov"] - lt["oreb"]
+            lt["pace"] = round(poss / gp, 1) if gp else 0
+            lt["fg_pct"] = round(lt["fgm"] * 100 / lt["fga"], 1) if lt["fga"] else 0
+            lt["tp_pct"] = round(lt["tpm"] * 100 / lt["tpa"], 1) if lt["tpa"] else 0
+            lt["ft_pct"] = round(lt["ftm"] * 100 / lt["fta"], 1) if lt["fta"] else 0
+            lt["rpg"] = round(lt["reb"] / gp, 1)
+            lt["apg"] = round(lt["ast"] / gp, 1)
+            lt["topg"] = round(lt["tov"] / gp, 1)
+            lt["spg"] = round(lt["stl"] / gp, 1)
+            lt["bpg"] = round(lt["blk"] / gp, 1)
+
+        if len(lc_teams) >= 5:
+            pdf.add_page()
+            pdf.subsection("1.5 League Comparison")
+
+            # Short name for display (max ~18 chars)
+            def _lc_short(tn):
+                short_map = {
+                    "Phoenix-MT": "Phoenix-MT Fót", "Tiszaújvárosi": "Tiszaújváros",
+                    "Insedo": "Insedo Veszprém", "Jászberényi": "Jászberényi KSE",
+                }
+                for k, v in short_map.items():
+                    if k.lower() in tn.lower():
+                        return v
+                # Truncate
+                return tn[:18] if len(tn) > 18 else tn
+
+            # Mini-table renderer
+            def _draw_league_table(px, py, title, stat_key, fmt_fn, ascending=False, col_w=88):
+                """Draw a ranked mini-table at (px, py). Returns height used."""
+                row_h = 3.2
+                hdr_h = 5
+
+                # Sort teams
+                sorted_teams = sorted(lc_teams, key=lambda t: t.get(stat_key, 0), reverse=not ascending)
+
+                # Header
+                pdf.set_fill_color(40, 40, 40)
+                pdf.set_text_color(255, 255, 255)
+                pdf.set_font("Arial", "B", 6)
+                pdf.rect(px, py, col_w, hdr_h, "F")
+                pdf.set_xy(px + 1, py + 0.8)
+                pdf.cell(col_w - 2, hdr_h - 1.5, title, align="L")
+
+                # Rows
+                y = py + hdr_h
+                for i, lt in enumerate(sorted_teams):
+                    rank = i + 1
+                    tn = _lc_short(lt["short_name"])
+                    val = fmt_fn(lt)
+                    # Is this the scouted team?
+                    _lt_low = lt["team_name"].lower()
+                    is_ours = our_name and (our_name.lower()[:8] in _lt_low or _lt_low[:8] in our_name.lower())
+
+                    if is_ours:
+                        pdf.set_fill_color(180, 30, 30)
+                        pdf.set_text_color(255, 255, 255)
+                        pdf.set_font("Arial", "B", 5.5)
+                    else:
+                        pdf.set_fill_color(248, 248, 250) if rank % 2 == 1 else pdf.set_fill_color(240, 240, 242)
+                        pdf.set_text_color(50, 50, 50)
+                        pdf.set_font("Arial", "", 5.5)
+
+                    pdf.rect(px, y, col_w, row_h, "F")
+                    # Rank
+                    pdf.set_xy(px + 0.5, y + 0.2)
+                    rank_w = 5
+                    pdf.cell(rank_w, row_h - 0.4, f"{rank}.", align="R")
+                    # Team name
+                    pdf.set_xy(px + rank_w + 1, y + 0.2)
+                    pdf.cell(col_w - rank_w - 16, row_h - 0.4, tn)
+                    # Value
+                    if is_ours:
+                        pdf.set_font("Arial", "B", 5.5)
+                    else:
+                        pdf.set_font("Arial", "B", 5.5)
+                        pdf.set_text_color(80, 80, 80) if not is_ours else None
+                    pdf.set_xy(px + col_w - 15, y + 0.2)
+                    pdf.cell(14, row_h - 0.4, val, align="R")
+
+                    y += row_h
+
+                return hdr_h + len(sorted_teams) * row_h
+
+            # Layout: 2 columns, 5 tables per column
+            avail_w = pdf.w - pdf.l_margin - pdf.r_margin
+            col_w = (avail_w - 4) / 2  # 4mm gap
+            col1_x = pdf.l_margin
+            col2_x = pdf.l_margin + col_w + 4
+
+            categories = [
+                ("Net Rating", "nrtg", lambda t: f"{t['nrtg']:+.1f}", False),
+                ("Offensive Rtg (PPG)", "ppg", lambda t: f"{t['ppg']:.1f}", False),
+                ("Defensive Rtg (OPPG)", "oppg", lambda t: f"{t['oppg']:.1f}", True),
+                ("Pace (Poss/G)", "pace", lambda t: f"{t['pace']:.1f}", False),
+                ("3PT%", "tp_pct", lambda t: f"{t['tp_pct']:.1f}%", False),
+                ("FT%", "ft_pct", lambda t: f"{t['ft_pct']:.1f}%", False),
+                ("Rebounds / Game", "rpg", lambda t: f"{t['rpg']:.1f}", False),
+                ("Assists / Game", "apg", lambda t: f"{t['apg']:.1f}", False),
+                ("Turnovers / Game", "topg", lambda t: f"{t['topg']:.1f}", True),
+                ("Steals / Game", "spg", lambda t: f"{t['spg']:.1f}", False),
+            ]
+
+            pdf.set_auto_page_break(auto=False)
+
+            y_start = pdf.get_y() + 2
+            gap_between = 3  # vertical gap between tables
+
+            # Left column (first 5)
+            cy = y_start
+            for i in range(5):
+                title, key, fmt, asc = categories[i]
+                h = _draw_league_table(col1_x, cy, title, key, fmt, ascending=asc, col_w=col_w)
+                cy += h + gap_between
+
+            # Right column (next 5)
+            cy = y_start
+            for i in range(5, 10):
+                title, key, fmt, asc = categories[i]
+                h = _draw_league_table(col2_x, cy, title, key, fmt, ascending=asc, col_w=col_w)
+                cy += h + gap_between
+
+            pdf.set_auto_page_break(auto=True, margin=20)
+            pdf.set_y(max(cy, y_start + 5))
+            print(f"  League comparison: {len(lc_teams)} teams across 10 categories")
+
+    except Exception as e:
+        print(f"  Warning: League comparison skipped ({e})")
 
     # ── §2 ROTATION & PERSONNEL ──────────────────────────────────
     pdf.add_page()
@@ -3067,7 +3361,11 @@ def main():
                     THEN ROUND(SUM(CASE WHEN event_type IN ('CLOSE_MADE','MID_MADE','DUNK_MADE','THREE_MADE') THEN 1 ELSE 0 END)*100.0 /
                          SUM(CASE WHEN event_type IN ('CLOSE_MADE','MID_MADE','DUNK_MADE','THREE_MADE',
                              'CLOSE_MISS','MID_MISS','DUNK_MISS','THREE_MISS') THEN 1 ELSE 0 END), 1)
-                    ELSE NULL END as fg_pct
+                    ELSE NULL END as fg_pct,
+                CASE WHEN SUM(CASE WHEN event_type IN ('THREE_MADE','THREE_MISS') THEN 1 ELSE 0 END) >= 15
+                    THEN ROUND(SUM(CASE WHEN event_type='THREE_MADE' THEN 1 ELSE 0 END)*100.0 /
+                         SUM(CASE WHEN event_type IN ('THREE_MADE','THREE_MISS') THEN 1 ELSE 0 END), 1)
+                    ELSE NULL END as tp_pct
             FROM pbp_events e JOIN matches m ON e.gamecode=m.gamecode
             WHERE m.comp_code=? AND e.player_name != ''
             GROUP BY e.player_name HAVING gp >= 10
@@ -3075,28 +3373,33 @@ def main():
         all_players = pct_cur.fetchall()
         pbp_pct.close()
 
-        # Build sorted lists for each stat (fg_pct at index 10, skip NULLs)
+        # Build sorted lists for each stat (fg_pct at index 10, tp_pct at index 11, skip NULLs)
         stat_indices = {'ppg': 3, 'apg': 4, 'rpg': 5, 'spg': 6, 'bpg': 7, 'tpg': 8, 'fpg': 9}
         sorted_stats = {k: sorted(r[v] for r in all_players) for k, v in stat_indices.items()}
-        # FG% separately (skip NULLs)
+        # FG% and 3PT% separately (skip NULLs)
         fg_vals = sorted(r[10] for r in all_players if r[10] is not None)
         sorted_stats['fg'] = fg_vals
+        tp_vals = sorted(r[11] for r in all_players if r[11] is not None)
+        sorted_stats['tp'] = tp_vals
 
         def calc_pctile(val, sorted_list):
             return round(sum(1 for v in sorted_list if v < val) * 100.0 / max(len(sorted_list), 1))
 
         # Compute percentiles for our team's players
-        team_short = TEAM.strip("%")
+        team_short = TEAM.strip("%").replace("-", " ").lower()
         for row in all_players:
             name = row[0]
             team = row[1]
-            if team and team_short in team:
+            if team and team_short in team.lower():
                 pcts = {}
                 for stat_key, idx in stat_indices.items():
                     pcts[stat_key] = calc_pctile(row[idx], sorted_stats[stat_key])
                 # FG% percentile (if available)
                 if row[10] is not None and fg_vals:
                     pcts['fg'] = calc_pctile(row[10], fg_vals)
+                # 3PT% percentile (if available, 15+ 3PA)
+                if row[11] is not None and tp_vals:
+                    pcts['tp'] = calc_pctile(row[11], tp_vals)
                 player_percentiles[name] = pcts
         print(f"  Computed percentiles for {len(player_percentiles)} {team_short} players (league: {len(all_players)})")
     except Exception as e:
@@ -3287,7 +3590,8 @@ def main():
                     height=r.get("height"), pos=r.get("pos"),
                     strengths=player_strengths.get(name),
                     player_zones=player_subzones.get(name),
-                    percentiles=player_percentiles.get(name))
+                    percentiles=player_percentiles.get(name),
+                    player_shots=player_shots_raw.get(name))
 
     # ROTATION — key bench players who get regular minutes
     pdf.ln(2)
@@ -3303,7 +3607,8 @@ def main():
                     height=r.get("height"), pos=r.get("pos"),
                     strengths=player_strengths.get(name),
                     player_zones=player_subzones.get(name),
-                    percentiles=player_percentiles.get(name))
+                    percentiles=player_percentiles.get(name),
+                    player_shots=player_shots_raw.get(name))
 
     # BENCH — situational / fringe players
     pdf.ln(2)
@@ -3319,15 +3624,18 @@ def main():
                     height=r.get("height"), pos=r.get("pos"),
                     strengths=player_strengths.get(name),
                     player_zones=player_subzones.get(name),
-                    percentiles=player_percentiles.get(name))
+                    percentiles=player_percentiles.get(name),
+                    player_shots=player_shots_raw.get(name))
 
     # ── §3 HEAD-TO-HEAD ANALYSIS ─────────────────────────────────
     if VS_TEAM:
         vs_strip = VS_TEAM.strip("%")
-        # Find H2H matches from mkosz_stats DB
+        # Find H2H matches from mkosz_stats DB (case-insensitive)
+        _h2h_tq = _tq  # already lowercased + normalized from earlier
+        _h2h_vq = vs_strip.replace("-", " ").lower()
         h2h_matches = [m for m in all_matches
-                        if (TEAM.strip("%") in (m["team_a_name"] or "") and vs_strip in (m["team_b_name"] or ""))
-                        or (vs_strip in (m["team_a_name"] or "") and TEAM.strip("%") in (m["team_b_name"] or ""))]
+                        if (_h2h_tq in (m["team_a_name"] or "").lower() and _h2h_vq in (m["team_b_name"] or "").lower())
+                        or (_h2h_vq in (m["team_a_name"] or "").lower() and _h2h_tq in (m["team_b_name"] or "").lower())]
         h2h_matches.sort(key=lambda m: m.get("match_date") or "")
 
         if h2h_matches:
@@ -3335,14 +3643,19 @@ def main():
             _s0 = team_side(h2h_matches[0], TEAM)
             vs_display = h2h_matches[0]["team_b_name"] if _s0 == "A" else h2h_matches[0]["team_a_name"]
 
-            # H2H record
-            h2h_w = sum(1 for m in h2h_matches if scored(m, team_side(m, TEAM)) > allowed(m, team_side(m, TEAM)))
+            # H2H record — from VS_TEAM (user's team) perspective
+            # vs_side = the VS_TEAM side in each match
+            def vs_side(m):
+                s = team_side(m, TEAM)
+                return "B" if s == "A" else "A"
+
+            h2h_w = sum(1 for m in h2h_matches if scored(m, vs_side(m)) > allowed(m, vs_side(m)))
             h2h_l = len(h2h_matches) - h2h_w
-            h2h_avg_scored = sum(scored(m, team_side(m, TEAM)) for m in h2h_matches) / len(h2h_matches)
-            h2h_avg_allowed = sum(allowed(m, team_side(m, TEAM)) for m in h2h_matches) / len(h2h_matches)
+            h2h_avg_scored = sum(scored(m, vs_side(m)) for m in h2h_matches) / len(h2h_matches)
+            h2h_avg_allowed = sum(allowed(m, vs_side(m)) for m in h2h_matches) / len(h2h_matches)
             h2h_avg_margin = h2h_avg_scored - h2h_avg_allowed
 
-            print(f"  H2H: {our_name} vs {vs_display}: {h2h_w}-{h2h_l} ({len(h2h_matches)} games)")
+            print(f"  H2H: {vs_display} vs {our_name}: {h2h_w}-{h2h_l} ({len(h2h_matches)} games)")
 
             pdf.add_page()
             pdf.section_title(f"3. Head-to-Head Analysis")
@@ -3363,33 +3676,34 @@ def main():
             pdf.table_header(cols, widths)
 
             for m in h2h_matches:
-                s = team_side(m, TEAM)
-                sc, al = scored(m, s), allowed(m, s)
+                # From VS_TEAM (user's) perspective
+                vs_s = vs_side(m)
+                sc, al = scored(m, vs_s), allowed(m, vs_s)
                 margin = sc - al
                 wl = sc > al
-                opp = opp_name(m, s)
-                # Parse quarter scores
+                opp = our_name  # opponent is the scouted team
+                # Parse quarter scores — from VS_TEAM perspective
                 qs_cells = []  # (text, won_quarter)
                 try:
                     qs = json.loads(m.get("quarter_scores") or "[]")
                     for pair in qs[:4]:
                         if len(pair) == 2:
-                            qa = pair[0] if s == "A" else pair[1]
-                            qb = pair[1] if s == "A" else pair[0]
+                            qa = pair[0] if vs_s == "A" else pair[1]
+                            qb = pair[1] if vs_s == "A" else pair[0]
                             qs_cells.append((f"{qa}-{qb}", qa > qb, qa < qb))
                 except:
                     pass
                 while len(qs_cells) < 4:
                     qs_cells.append(("-", False, False))
 
-                # Row base color
+                # Row base color — green = VS_TEAM won, red = VS_TEAM lost
                 row_bg_green = (230, 255, 230)
                 row_bg_red = (255, 230, 230)
                 row_bg = row_bg_green if wl else row_bg_red
 
                 pdf.set_font("Arial", "", 7.5)
                 pdf.set_text_color(30, 30, 30)
-                base_cells = [m.get("match_date", ""), "H" if s == "A" else "@", opp[:22],
+                base_cells = [m.get("match_date", ""), "H" if vs_s == "A" else "@", (opp or "")[:22],
                               f"{sc}-{al}", f"{margin:+d}"]
 
                 # Render base cells with row background
@@ -3417,13 +3731,13 @@ def main():
             h2h_q_team = {q: [] for q in range(1, 5)}
             h2h_q_opp = {q: [] for q in range(1, 5)}
             for m in h2h_matches:
-                s = team_side(m, TEAM)
+                vs_s = vs_side(m)
                 try:
                     qs = json.loads(m.get("quarter_scores") or "[]")
                     for i, pair in enumerate(qs[:4]):
                         if len(pair) == 2:
-                            t_pts = pair[0] if s == "A" else pair[1]
-                            o_pts = pair[1] if s == "A" else pair[0]
+                            t_pts = pair[0] if vs_s == "A" else pair[1]
+                            o_pts = pair[1] if vs_s == "A" else pair[0]
                             h2h_q_team[i + 1].append(t_pts)
                             h2h_q_opp[i + 1].append(o_pts)
                 except:
@@ -3452,11 +3766,11 @@ def main():
                 h2h_totals = []  # (team_total, opp_total) per game
 
                 for gi, m in enumerate(h2h_matches):
-                    s = team_side(m, TEAM)
+                    vs_s = vs_side(m)
                     date_str = (m.get("match_date") or "")[-5:]  # "MM-DD"
-                    sc, al = scored(m, s), allowed(m, s)
+                    sc, al = scored(m, vs_s), allowed(m, vs_s)
                     total_margin = sc - al
-                    ha = "H" if s == "A" else "@"
+                    ha = "H" if vs_s == "A" else "@"
 
                     pdf.set_font("Arial", "", 7)
                     pdf.set_fill_color(248, 248, 252)
@@ -3470,8 +3784,8 @@ def main():
 
                     for qi in range(1, 5):
                         if qi - 1 < len(qs) and len(qs[qi - 1]) == 2:
-                            t_pts = qs[qi - 1][0] if s == "A" else qs[qi - 1][1]
-                            o_pts = qs[qi - 1][1] if s == "A" else qs[qi - 1][0]
+                            t_pts = qs[qi - 1][0] if vs_s == "A" else qs[qi - 1][1]
+                            o_pts = qs[qi - 1][1] if vs_s == "A" else qs[qi - 1][0]
                             diff = t_pts - o_pts
                             h2h_q_margins[qi].append(diff)
                             # Color: green if won quarter, red if lost
@@ -3586,12 +3900,12 @@ def main():
 
                     return result
 
-                # Build lineup data for all H2H games
-                all_q_lineups = []  # list of (game_idx, quarter, team_side, our_lineup, opp_lineup, margin)
+                # Build lineup data for all H2H games — from VS_TEAM perspective
+                all_q_lineups = []  # list of (game_idx, quarter, our_lineup, opp_lineup, margin)
                 for gi, m in enumerate(h2h_matches):
                     mid = m["gamecode"]
-                    s = team_side(m, TEAM)
-                    opp_s = "B" if s == "A" else "A"
+                    vs_s = vs_side(m)
+                    scouted_s = "B" if vs_s == "A" else "A"
 
                     q_lineups = get_quarter_lineups(mid, pbp_lu)
                     try:
@@ -3600,11 +3914,11 @@ def main():
                         qs = []
 
                     for q in range(1, 5):
-                        our_lu = q_lineups.get((q, s), frozenset())
-                        opp_lu = q_lineups.get((q, opp_s), frozenset())
+                        our_lu = q_lineups.get((q, vs_s), frozenset())
+                        opp_lu = q_lineups.get((q, scouted_s), frozenset())
                         if q - 1 < len(qs) and len(qs[q - 1]) == 2:
-                            t_pts = qs[q - 1][0] if s == "A" else qs[q - 1][1]
-                            o_pts = qs[q - 1][1] if s == "A" else qs[q - 1][0]
+                            t_pts = qs[q - 1][0] if vs_s == "A" else qs[q - 1][1]
+                            o_pts = qs[q - 1][1] if vs_s == "A" else qs[q - 1][0]
                             margin = t_pts - o_pts
                         else:
                             margin = 0
@@ -3622,19 +3936,19 @@ def main():
                     names = sorted(lu)[:max_names]
                     return " / ".join(short_name(n) for n in names)
 
-                # Combined matchup view: our lineup vs opponent lineup per quarter
+                # Combined matchup view: VS_TEAM lineup vs scouted lineup per quarter
                 for gi, m in enumerate(h2h_matches):
-                    s = team_side(m, TEAM)
+                    vs_s = vs_side(m)
                     date_str = (m.get("match_date") or "")
-                    sc, al = scored(m, s), allowed(m, s)
-                    ha = "H" if s == "A" else "@"
+                    sc, al = scored(m, vs_s), allowed(m, vs_s)
+                    ha = "H" if vs_s == "A" else "@"
 
                     pdf.set_font("Arial", "B", 7)
                     pdf.set_text_color(60, 60, 60)
                     pdf.cell(0, 4.5, f"Game {gi + 1}: {date_str} ({ha}) — {sc}-{al}")
                     pdf.ln(5)
 
-                    # Header row
+                    # Header row: left = VS_TEAM (user), right = scouted team
                     lu_w = 72  # lineup column width
                     q_w = 8
                     margin_w = 12
@@ -3643,9 +3957,9 @@ def main():
                     pdf.set_fill_color(40, 40, 40)
                     pdf.set_text_color(255, 255, 255)
                     pdf.cell(q_w, 4, "", fill=True)
-                    pdf.cell(lu_w, 4, f"  {our_name[:20]}", fill=True, align="L")
-                    pdf.cell(margin_w, 4, "+/-", fill=True, align="C")
                     pdf.cell(lu_w, 4, f"  {vs_display[:20]}", fill=True, align="L")
+                    pdf.cell(margin_w, 4, "+/-", fill=True, align="C")
+                    pdf.cell(lu_w, 4, f"  {our_name[:20]}", fill=True, align="L")
                     pdf.ln(4)
 
                     for _, q, our_lu, opp_lu, margin in [x for x in all_q_lineups if x[0] == gi]:
@@ -3776,13 +4090,13 @@ def main():
                         m = next((mm for mm in h2h_matches if mm["gamecode"] == gc), None)
                         if not m:
                             continue
-                        s = team_side(m, TEAM)
+                        vs_s = vs_side(m)
                         points = []
                         for e in evts:
                             if e.get("score_a") is not None and e.get("score_b") is not None:
                                 sa, sb = e["score_a"], e["score_b"]
-                                t_sc = sa if s == "A" else sb
-                                o_sc = sb if s == "A" else sa
+                                t_sc = sa if vs_s == "A" else sb
+                                o_sc = sb if vs_s == "A" else sa
                                 diff = t_sc - o_sc
                                 q = e.get("quarter", 1) or 1
                                 minute = e.get("minute", 0) or 0
@@ -3837,7 +4151,7 @@ def main():
                         # Detect scoring runs (8+ unanswered)
                         m = next((mm for mm in h2h_matches if mm["gamecode"] == gc), None)
                         if m:
-                            s = team_side(m, TEAM)
+                            vs_s = vs_side(m)
                             evts = h2h_events[gc]
                             run_pts = 0
                             run_start_min = 0
@@ -3847,7 +4161,7 @@ def main():
                                 if not is_made:
                                     continue
                                 e_team = e.get("team", "")
-                                is_our = (e_team == s)
+                                is_our = (e_team == vs_s)
                                 pts = 0
                                 et = e.get("event_type", "")
                                 if "THREE" in et: pts = 3
@@ -3894,8 +4208,8 @@ def main():
                             pdf.rect(pdf.get_x(), pdf.get_y() + 0.5, 3, 2, "F")
                             pdf.set_x(pdf.get_x() + 4)
                             pdf.set_text_color(80, 80, 80)
-                            s = team_side(m, TEAM)
-                            sc, al = scored(m, s), allowed(m, s)
+                            vs_s = vs_side(m)
+                            sc, al = scored(m, vs_s), allowed(m, vs_s)
                             pdf.cell(50, 3, f"Game {gi + 1}: {m.get('match_date', '')} ({sc}-{al})")
                             pdf.set_x(pdf.get_x() + 2)
                     pdf.ln(4)
@@ -3907,7 +4221,7 @@ def main():
                         for gc, start_min, pts, who in scoring_runs_all[:4]:  # Max 4
                             gi = list(flow_data.keys()).index(gc) + 1
                             q_label = f"Q{start_min // 10 + 1}"
-                            team_label = our_name[:12] if who == "TEAM" else vs_display[:12]
+                            team_label = vs_display[:12] if who == "TEAM" else our_name[:12]
                             pdf.cell(0, 3, f"  Game {gi} {q_label}: {team_label} {pts}-0 run")
                             pdf.ln(3)
                         pdf.ln(2)
@@ -3985,7 +4299,7 @@ def main():
 
                 n_h2h = len(h2h_matches)
 
-                for label, side in [(f"{our_name}", "team"), (f"{vs_display}", "opp")]:
+                for label, side in [(f"{vs_display}", "opp"), (f"{our_name}", "team")]:
                     box = h2h_box_score(h2h_gamecodes, side, h2h_matches)
                     if not box:
                         continue

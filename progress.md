@@ -9,10 +9,11 @@
 ### Kész funkciók
 
 **Section 1: Team Overview & Season Context**
-- 1.1 Standings — élő tabella mkosz.hu-ról, + summary card (ALL/HOME/AWAY bontás: Record, PPG, OPPG, Margin). **Record, home/away, streak a tabelláról jön** (authoritative source).
+- 1.1 Standings — élő tabella mkosz.hu-ról (scouted csapat semleges szürke kiemelés), + summary card (szürke elválasztó, W-L mérleg: zöld győzelem / piros vereség). **Record, home/away, streak a tabelláról jön** (authoritative source). Standings Dob/Kap oszlopok → PPG/OPPG.
 - 1.2 Season Margin Trend — meccsenkénti pontkülönbség barchart, H/A jelölés, upset csillag, 5-meccses mozgóátlag. **Meccs eredmények mkosz.hu bajnoksag-musor oldalról scrape-elve** (nem DB-ből).
 - 1.3 Last 5 Games — utolsó 5 meccs táblázat, UPS (upset) oszloppal. **Szintén mkosz.hu scrape-ből.**
 - 1.4 Season Shot Chart — bal: dot chart (összes dobás), jobb: 9-zónás heatmap (paint, mid L/R, corner 3 L/R, wing 3 L/R, top 3)
+- 1.5 League Comparison — 10 mini-tabella (2×5 grid), mind a 14 csapat rangsorolva: Net Rating, PPG, OPPG, Pace, 3PT%, FT%, RPG, APG, TOV/G, STL/G. Scouted csapat piros kiemelés. pbp_events aggregáció + standings Dob/Kap.
 
 **Section 2: Rotation & Personnel**
 - 2.1 Projected Starting Five — félpálya formáció rajz, MKOSZ-ról letöltött körbe vágott játékos fotókkal, mezszám badge, magasság, poszt, PPG, starter frekvencia. Cserék szürke kerettel a starterek alatt, szaggatott vonallal összekötve.
@@ -20,20 +21,20 @@
 - 2.1c Lineup Net Rating — top lineup-ok percek szerint rendezve (last 8 meccs), NRTG/40 számítás
 - 2.2 Key Players — egyéni játékos kártyák (STARTERS / ROTATION / BENCH):
   - Kör fotó (piros keret) + pozíció badge (PG kék, SG zöld, SF narancs, PF piros, C lila)
-  - Stat sor: MPG, RPG, APG, TOV, PF — liga percentile csíkokkal
-  - Scoring panel: PPG + FG% "top X%" badge-dzsel (zöld/szürke/piros), mini félpálya zóna heatmap (9 zóna), FT sor
-  - Scout note + strength tagek (auto-generált)
+  - Stat sor: 6 oszlop — MPG, RPG, PF | APG, TOV, A/TO (utolsó 3 keretezve). Mindegyik "top X%" badge-dzsel (zöld/szürke/piros).
+  - Scoring panel: PPG + FG% + 3FG% "top X%" badge-dzsel, mini félpálya zóna heatmap dobáspont overlay-jel (zöld=bedobott, piros=kihagyott), FT sor
+  - Strength tagek (auto-generált)
 
-**Section 3: Head-to-Head Analysis** (opcionális, `--vs` flag)
-- 3.1 Match History — H2H mérleg, meccs táblázat negyedenkénti bontással (zöld/piros per-negyed háttér)
-- 3.2 Quarter-by-Quarter Breakdown — színezett margin tábla (sorok=meccsek, oszlopok=Q1-Q4+Total, AVG sor)
-- 3.3 Quarter Lineup Analysis — combined matchup view: egy sorban saját lineup | margin | ellenfél lineup negyedenként. Best/worst/toughest lineup summary.
+**Section 3: Head-to-Head Analysis** (opcionális, `--vs` flag) — **VS_TEAM (felhasználó csapata) szemszögéből**
+- 3.1 Match History — H2H mérleg VS_TEAM szemszögéből, meccs táblázat negyedenkénti bontással (zöld/piros = VS_TEAM nyerte/vesztette)
+- 3.2 Quarter-by-Quarter Breakdown — színezett margin tábla VS_TEAM szemszögéből (sorok=meccsek, oszlopok=Q1-Q4+Total, AVG sor)
+- 3.3 Quarter Lineup Analysis — combined matchup view: bal = VS_TEAM lineup | margin | jobb = scouted csapat lineup. Best/worst/toughest lineup summary.
 - 3.4 Score Flow — futó pontkülönbség vonaldiagram, scoring run annotációk
 - 3.5 Player Performance in H2H — box score mindkét csapat játékosaira a H2H meccsekből
 - 3.6 H2H Shot Chart — zóna breakdown tábla hot/cold zone elemzéssel
 
 ### Infrastruktúra
-- Egyetlen fájl: `mockup_s1s2.py` (~4200 sor)
+- Egyetlen fájl: `mockup_s1s2.py` (~4600 sor)
 - CLI: `python3 mockup_s1s2.py <csapatnév>` → `scout_{slug}.pdf`
 - CLI H2H: `python3 mockup_s1s2.py <csapatnév> --vs <ellenfél>` → `scout_{slug}_vs_{vs-slug}.pdf`
 - 3 adatforrás: mkosz_stats.sqlite (shotchart + PBP events/subs), mkosz.hu standings (élő tabella/roster/fotók), mkosz.hu bajnoksag-musor (meccs eredmények scrape)

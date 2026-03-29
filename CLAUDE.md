@@ -22,10 +22,11 @@ Output: `scout_{team-slug}.pdf` or `scout_{slug}_vs_{vs-slug}.pdf`
 ## Report Structure (3 Sections, ~7-10 pages)
 
 ### Section 1: Team Overview & Season Context
-- **1.1 Standings** — Full league table (scraped live from mkosz.hu) + summary card (ALL/HOME/AWAY splits: Record, PPG, OPPG, Margin, vs .500+, vs .500-, Last 5)
+- **1.1 Standings** — Full league table (scraped live from mkosz.hu, scouted team highlighted in neutral gray) + summary card (ALL/HOME/AWAY splits: Record with green W / red L coloring, PPG, OPPG, Margin). Gray separator bar (not red).
 - **1.2 Season Margin Trend** — Bar chart (green W / red L), H/A labels, upset markers (*), 5-game rolling avg line. **Match results scraped from mkosz.hu** (authoritative).
 - **1.3 Last 5 Games** — Table with Date, H/@, Opponent, Score, W/L, +/-, UPS (upset marker). **From mkosz.hu scrape.**
 - **1.4 Season Shot Chart** — Dual view: dot chart (left) + zone heatmap (right, 9 zones: paint, left/right mid, left/right corner 3, left/right wing 3, top 3), green/red coloring by efficiency
+- **1.5 League Comparison** — 10 mini-tables (2×5 grid) ranking all 14 teams: Net Rating, PPG, OPPG, Pace, 3PT%, FT%, RPG, APG, TOV/G, STL/G. Scouted team highlighted in red. PPG/OPPG from standings Dob/Kap; other stats from pbp_events aggregation.
 
 ### Section 2: Rotation & Personnel
 - **2.1 Projected Starting Five** — Half-court formation diagram with circular player photos (from MKOSZ), jersey badge, height, position, PPG, starter frequency. Backup players shown below with gray borders + SUB label + dashed lines connecting to their starter.
@@ -33,14 +34,15 @@ Output: `scout_{team-slug}.pdf` or `scout_{slug}_vs_{vs-slug}.pdf`
 - **2.1c Lineup Net Rating** — Top lineups by minutes played (last 8 games), with NET and NRTG/40. Starting five marked with [S5].
 - **2.2 Key Players** — Individual player cards grouped as STARTERS / ROTATION / BENCH:
   - Circular photo (red border) + jersey + name + position badge (color-coded: PG=blue, SG=green, SF=orange, PF=red, C=purple)
-  - Stats row: MPG, RPG, APG, TOV, PF (with league percentile mini-bars)
-  - Scoring panel (right side): PPG + FG% with "top X%" badges (green/gray/red), mini half-court zone heatmap (9 zones matching team shotchart), FT line
-  - Scout note (italic), strength tags (dark pills)
+  - Stats row: 6 columns — MPG, RPG, PF | APG, TOV, A/TO (last 3 grouped with thin border). All with "top X%" badges (green ≥70th / gray / red ≤30th). TOV and PF inverted.
+  - Scoring panel (right side): PPG + FG% + 3FG% with "top X%" badges, mini half-court zone heatmap with shot dot overlay (green=made, red=missed), FT line
+  - Strength tags (dark pills)
 
 ### Section 3: Head-to-Head Analysis (optional, `--vs` flag)
-- **3.1 Match History** — H2H record summary + game table with quarter-by-quarter coloring (green/red per quarter margin)
-- **3.2 Quarter-by-Quarter Breakdown** — Color-coded margin table (rows=games, cols=Q1-Q4+Total, AVG row)
-- **3.3 Quarter Lineup Analysis** — Combined matchup view: each row shows our lineup | margin | opponent lineup per quarter. Best/worst/toughest lineup summary below.
+**All H2H data shown from VS_TEAM (user's team) perspective.** Green = good for user, red = bad for user.
+- **3.1 Match History** — H2H record summary + game table with quarter-by-quarter coloring (green/red per quarter margin, from VS_TEAM perspective)
+- **3.2 Quarter-by-Quarter Breakdown** — Color-coded margin table (rows=games, cols=Q1-Q4+Total, AVG row) — margins from VS_TEAM perspective
+- **3.3 Quarter Lineup Analysis** — Combined matchup view: left = VS_TEAM lineup | margin | right = scouted team lineup per quarter. Best/worst/toughest lineup summary below.
 - **3.4 Score Flow** — Running score differential line chart with scoring run annotations (8+ point runs)
 - **3.5 Player Performance in H2H** — Box scores for both teams from H2H matches
 - **3.6 H2H Shot Chart** — Zone breakdown table with hot/cold zone analysis
