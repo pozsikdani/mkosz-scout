@@ -207,7 +207,8 @@ def pct(a, b):
 
 
 def team_side(m, tp):
-    if tp.strip("%") in (m["team_a_name"] or ""):
+    _q = tp.strip("%").replace("-", " ").lower()
+    if _q in (m["team_a_name"] or "").lower():
         return "A"
     return "B"
 
@@ -740,7 +741,8 @@ def main():
         (COMP,),
     ).fetchall()]
 
-    matches = [m for m in all_matches if TEAM.strip("%") in (m["team_a_name"] or "") or TEAM.strip("%") in (m["team_b_name"] or "")]
+    _tq = TEAM.strip("%").replace("-", " ").lower()
+    matches = [m for m in all_matches if _tq in (m["team_a_name"] or "").lower() or _tq in (m["team_b_name"] or "").lower()]
 
     # Scrape standings from mkosz.hu
     STANDINGS_URL = f"https://mkosz.hu/bajnoksag/x2526/{COMP}"
@@ -801,13 +803,16 @@ def main():
         return tn
 
     # Find our team
+    _team_q = TEAM.strip("%").replace("-", " ").lower()
+    our_standing = next((s for s in standings if _team_q in s["team"].lower() or _team_q.replace(" ", "-") in s["team"].lower()), None)
+
     our_name = None
     for m in matches:
         s = team_side(m, TEAM)
         our_name = m["team_a_name"] if s == "A" else m["team_b_name"]
         break
-
-    our_standing = next((s for s in standings if TEAM.strip("%") in s["team"]), None)
+    if not our_name and our_standing:
+        our_name = our_standing["team"]
     our_pos = our_standing["rank"] if our_standing else "?"
 
     # Record from standings (authoritative source)
@@ -886,14 +891,18 @@ def main():
         streak_type = _sk.startswith("W")
         streak_ct = int("".join(c for c in _sk if c.isdigit()) or "0")
     else:
-        streak_type = scored(matches[-1], team_side(matches[-1], TEAM)) > allowed(matches[-1], team_side(matches[-1], TEAM))
-        streak_ct = 0
-        for m in reversed(matches):
-            s = team_side(m, TEAM)
-            if (scored(m, s) > allowed(m, s)) == streak_type:
-                streak_ct += 1
-            else:
-                break
+        if matches:
+            streak_type = scored(matches[-1], team_side(matches[-1], TEAM)) > allowed(matches[-1], team_side(matches[-1], TEAM))
+            streak_ct = 0
+            for m in reversed(matches):
+                s = team_side(m, TEAM)
+                if (scored(m, s) > allowed(m, s)) == streak_type:
+                    streak_ct += 1
+                else:
+                    break
+        else:
+            streak_type = True
+            streak_ct = 0
 
     # Last 5
     if mkosz_results:
@@ -905,8 +914,8 @@ def main():
     else:
         last5 = list(reversed(matches))[:5]
         l5_w = sum(1 for m in last5 if scored(m, team_side(m, TEAM)) > allowed(m, team_side(m, TEAM)))
-        l5_ppg = sum(scored(m, team_side(m, TEAM)) for m in last5) / len(last5)
-        l5_papg = sum(allowed(m, team_side(m, TEAM)) for m in last5) / len(last5)
+        l5_ppg = sum(scored(m, team_side(m, TEAM)) for m in last5) / len(last5) if last5 else 0
+        l5_papg = sum(allowed(m, team_side(m, TEAM)) for m in last5) / len(last5) if last5 else 0
         l5_margins = [scored(m, team_side(m, TEAM)) - allowed(m, team_side(m, TEAM)) for m in last5]
 
     # Quarter averages (DB only — mkosz results don't have quarter scores)
@@ -983,7 +992,8 @@ def main():
     pdf.set_text_color(100, 100, 100)
     pdf.cell(0, 8, f"NB1 B Piros  |  2025/2026 Season", align="C")
     pdf.ln(10)
-    pdf.cell(0, 8, f"Based on {len(matches)} games  |  Data through {matches[-1]['match_date']}", align="C")
+    _data_through = matches[-1]['match_date'] if matches else (mkosz_results[-1]["date"] if mkosz_results else "N/A")
+    pdf.cell(0, 8, f"Based on {len(matches) or len(mkosz_results)} games  |  Data through {_data_through}", align="C")
     pdf.ln(10)
 
     # Big record display
