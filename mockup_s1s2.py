@@ -251,14 +251,23 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
     pdf.set_fill_color(180, 30, 30) if is_starter else pdf.set_fill_color(160, 160, 160)
     pdf.rect(x0, y_start, 2, card_h, "F")
 
-    # Photo (if available) — circular crop, square
-    photo_w = 0
-    if photo_path:
-        import os
-        if os.path.exists(photo_path):
-            ph = card_h - 4  # photo size in mm (square)
-            pdf.image(photo_path, x0 + 4, y_start + 2, ph, ph)
-            photo_w = ph + 4
+    # Photo — circular crop, or "NO PIC" placeholder
+    ph = card_h - 4  # photo size in mm (square)
+    import os
+    if photo_path and os.path.exists(photo_path):
+        pdf.image(photo_path, x0 + 4, y_start + 2, ph, ph)
+    else:
+        # Draw gray circle placeholder with "NO PIC" text
+        cx_ph = x0 + 4 + ph / 2
+        cy_ph = y_start + 2 + ph / 2
+        pdf.set_fill_color(220, 220, 225)
+        pdf.set_draw_color(180, 180, 185)
+        pdf.ellipse(x0 + 4, y_start + 2, ph, ph, "FD")
+        pdf.set_font("Arial", "B", 5)
+        pdf.set_text_color(140, 140, 140)
+        pdf.set_xy(x0 + 4, y_start + 2 + ph / 2 - 2)
+        pdf.cell(ph, 4, "NO PIC", align="C")
+    photo_w = ph + 4
 
     # Content area starts after photo
     cx = x0 + 4 + photo_w
@@ -418,11 +427,12 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
         pdf.set_fill_color(180, 30, 30)
         pdf.rect(sp_x, sp_y, 0.5, sp_h, "F")
 
-        # Panel header: PPG, FG%, 3FG% side by side, each with own badge
+        # Panel header: PPG, FG%, 3FG%, FT% side by side, each with own badge
         ppg_val = stats.get('ppg', '-')
         fg_val = stats.get('fg', '-')
         tp_val = stats.get('3p', '-')
-        third_w = (sp_w - 2) / 3
+        ft_pct = stats.get('ft', '-')
+        col_w = (sp_w - 2) / 4
 
         def _top_badge(pdf, val_text, val_font_size, pct_key, bx, by, bw):
             """Draw value + colored top% badge below it.
@@ -454,26 +464,33 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
                 pdf.set_xy(btx, bty + 0.2)
                 pdf.cell(btw, bth - 0.4, badge_text, align="C")
 
-        # PPG column (left third)
+        # PPG column
         pdf.set_xy(sp_x + 1, sp_y + 1)
-        pdf.set_font("Arial", "", 4.5)
+        pdf.set_font("Arial", "", 4)
         pdf.set_text_color(120, 120, 120)
-        pdf.cell(third_w, 2.5, "PPG", align="C")
-        _top_badge(pdf, f"{ppg_val}", 8, 'ppg', sp_x + 1, sp_y + 3.5, third_w)
+        pdf.cell(col_w, 2.5, "PPG", align="C")
+        _top_badge(pdf, f"{ppg_val}", 7, 'ppg', sp_x + 1, sp_y + 3.5, col_w)
 
-        # FG% column (middle third)
-        pdf.set_xy(sp_x + 1 + third_w, sp_y + 1)
-        pdf.set_font("Arial", "", 4.5)
+        # FG% column
+        pdf.set_xy(sp_x + 1 + col_w, sp_y + 1)
+        pdf.set_font("Arial", "", 4)
         pdf.set_text_color(120, 120, 120)
-        pdf.cell(third_w, 2.5, "FG%", align="C")
-        _top_badge(pdf, f"{fg_val}%", 8, 'fg', sp_x + 1 + third_w, sp_y + 3.5, third_w)
+        pdf.cell(col_w, 2.5, "FG%", align="C")
+        _top_badge(pdf, f"{fg_val}%", 7, 'fg', sp_x + 1 + col_w, sp_y + 3.5, col_w)
 
-        # 3FG% column (right third)
-        pdf.set_xy(sp_x + 1 + 2 * third_w, sp_y + 1)
-        pdf.set_font("Arial", "", 4.5)
+        # 3FG% column
+        pdf.set_xy(sp_x + 1 + 2 * col_w, sp_y + 1)
+        pdf.set_font("Arial", "", 4)
         pdf.set_text_color(120, 120, 120)
-        pdf.cell(third_w, 2.5, "3FG%", align="C")
-        _top_badge(pdf, f"{tp_val}%", 8, 'tp', sp_x + 1 + 2 * third_w, sp_y + 3.5, third_w)
+        pdf.cell(col_w, 2.5, "3FG%", align="C")
+        _top_badge(pdf, f"{tp_val}%", 7, 'tp', sp_x + 1 + 2 * col_w, sp_y + 3.5, col_w)
+
+        # FT% column
+        pdf.set_xy(sp_x + 1 + 3 * col_w, sp_y + 1)
+        pdf.set_font("Arial", "", 4)
+        pdf.set_text_color(120, 120, 120)
+        pdf.cell(col_w, 2.5, "FT%", align="C")
+        _top_badge(pdf, f"{ft_pct}%", 7, 'ft', sp_x + 1 + 3 * col_w, sp_y + 3.5, col_w)
 
         # ── Mini zone heatmap court (same zone system as section 1.4) ──
         # If no shot data, show placeholder and skip heatmap
@@ -2261,7 +2278,12 @@ def main():
         print("  Using fallback roster data")
 
     # Determine projected starters from last 8 games
+    # Logic: rank by start_rate (starts / games_played), not raw starts count.
+    # A player who started 3/3 games (100%) ranks higher than 4/8 (50%).
+    # For tie-breaking, use raw starts count (more data = more confidence).
     starter_freq = {}  # name -> starts_in_last_8
+    starter_gp = {}    # name -> games_played_in_last_8 (appeared in subs)
+    starter_rate = {}  # name -> start_rate (starts / gp)
     team_exact = None  # exact team name from DB
     try:
         pbp_conn = sqlite3.connect(DB)
@@ -2275,25 +2297,35 @@ def main():
         team_exact = row[0] if row else TEAM.strip("%")
 
         pbp_cur.execute("""
-            WITH vasas_matches AS (
+            WITH team_matches AS (
                 SELECT m.gamecode, m.match_date,
-                       CASE WHEN m.team_a_name=? THEN 'A' ELSE 'B' END as vasas_side,
+                       CASE WHEN m.team_a_name=? THEN 'A' ELSE 'B' END as team_side,
                        ROW_NUMBER() OVER (ORDER BY m.match_date DESC) as rn
                 FROM matches m
                 WHERE m.comp_code=?
                   AND (m.team_a_name=? OR m.team_b_name=?)
             ),
-            last8 AS (SELECT * FROM vasas_matches WHERE rn <= 8),
+            last8 AS (SELECT * FROM team_matches WHERE rn <= 8),
+            -- All players who appeared in subs (either in or out) = played in game
+            players_in_game AS (
+                SELECT DISTINCT s.gamecode, s.player_out_name as player
+                FROM substitutions s
+                JOIN last8 vm ON s.gamecode = vm.gamecode AND s.team = vm.team_side
+                UNION
+                SELECT DISTINCT s.gamecode, s.player_in_name as player
+                FROM substitutions s
+                JOIN last8 vm ON s.gamecode = vm.gamecode AND s.team = vm.team_side
+            ),
             first_sub_in AS (
                 SELECT s.gamecode, s.player_in_name, MIN(s.event_seq) as first_in
                 FROM substitutions s
-                JOIN last8 vm ON s.gamecode = vm.gamecode AND s.team = vm.vasas_side
+                JOIN last8 vm ON s.gamecode = vm.gamecode AND s.team = vm.team_side
                 GROUP BY s.gamecode, s.player_in_name
             ),
             first_sub_out AS (
                 SELECT s.gamecode, s.player_out_name, MIN(s.event_seq) as first_out
                 FROM substitutions s
-                JOIN last8 vm ON s.gamecode = vm.gamecode AND s.team = vm.vasas_side
+                JOIN last8 vm ON s.gamecode = vm.gamecode AND s.team = vm.team_side
                 GROUP BY s.gamecode, s.player_out_name
             ),
             starters AS (
@@ -2304,13 +2336,21 @@ def main():
                     WHERE fi.gamecode = fo.gamecode AND fi.player_in_name = fo.player_out_name AND fi.first_in < fo.first_out
                 )
             )
-            SELECT player, COUNT(*) as starts
-            FROM starters GROUP BY player ORDER BY starts DESC
+            SELECT p.player,
+                   COUNT(DISTINCT p.gamecode) as gp,
+                   COALESCE(s.starts, 0) as starts
+            FROM players_in_game p
+            LEFT JOIN (SELECT player, COUNT(*) as starts FROM starters GROUP BY player) s ON p.player = s.player
+            GROUP BY p.player
+            ORDER BY starts DESC
         """, (team_exact, COMP, team_exact, team_exact))
         for row in pbp_cur.fetchall():
-            starter_freq[row[0]] = row[1]
+            name, gp, starts = row[0], row[1], row[2]
+            starter_freq[name] = starts
+            starter_gp[name] = gp
+            starter_rate[name] = starts / gp if gp > 0 else 0
         pbp_conn.close()
-        print(f"  Starter freq (last 8): {starter_freq}")
+        print(f"  Starter freq (last 8): {{{', '.join(f'{n}: {s}/{starter_gp[n]}({starter_rate[n]:.0%})' for n, s in sorted(starter_freq.items(), key=lambda x: -x[1]) if s > 0)}}}")
     except Exception as e:
         print(f"  Starter freq failed: {e}")
 
@@ -2334,8 +2374,13 @@ def main():
             return h >= 190
         return False
 
-    # Pick top 5 by frequency, assign to formation slots
-    top_starters = sorted(starter_freq.items(), key=lambda x: -x[1])[:7]
+    # Pick top 7 candidates by start_rate (starts/gp), tie-break by raw starts count
+    # A player with 3/3 (100%) ranks above 4/8 (50%), but 5/8 (62.5%) still beats 2/2 (100%)
+    # due to tie-break on raw starts giving more confidence
+    top_starters = sorted(
+        [(n, s) for n, s in starter_freq.items() if s > 0],
+        key=lambda x: (-starter_rate[x[0]], -x[1])
+    )[:7]
 
     guards = [(n, s) for n, s in top_starters if pos_category(n) == "guard"]
     wings = [(n, s) for n, s in top_starters if pos_category(n) in ("wing", "wing_big")]
@@ -2395,7 +2440,9 @@ def main():
         if slot == "PG": pos_label = f"G  {pos}"
         elif slot in ("LW", "RW"): pos_label = f"W  {pos}"
         else: pos_label = f"C  {pos}"
-        projected_five.append((slot, name, jersey, pos_label, height, "?", f"Started {starts}/8 last games"))
+        gp = starter_gp.get(name, starts)
+        rate_pct = int(starter_rate.get(name, 0) * 100)
+        projected_five.append((slot, name, jersey, pos_label, height, "?", f"Started {starts}/{gp} ({rate_pct}%)"))
 
     # Fill PPG from events DB
     try:
@@ -3384,7 +3431,11 @@ def main():
                 CASE WHEN SUM(CASE WHEN event_type IN ('THREE_MADE','THREE_MISS') THEN 1 ELSE 0 END) >= 15
                     THEN ROUND(SUM(CASE WHEN event_type='THREE_MADE' THEN 1 ELSE 0 END)*100.0 /
                          SUM(CASE WHEN event_type IN ('THREE_MADE','THREE_MISS') THEN 1 ELSE 0 END), 1)
-                    ELSE NULL END as tp_pct
+                    ELSE NULL END as tp_pct,
+                CASE WHEN SUM(CASE WHEN event_type IN ('FT_MADE','FT_MISS') THEN 1 ELSE 0 END) >= 10
+                    THEN ROUND(SUM(CASE WHEN event_type='FT_MADE' THEN 1 ELSE 0 END)*100.0 /
+                         SUM(CASE WHEN event_type IN ('FT_MADE','FT_MISS') THEN 1 ELSE 0 END), 1)
+                    ELSE NULL END as ft_pct
             FROM pbp_events e JOIN matches m ON e.gamecode=m.gamecode
             WHERE m.comp_code=? AND e.player_name != ''
             GROUP BY e.player_name HAVING gp >= 10
@@ -3400,6 +3451,8 @@ def main():
         sorted_stats['fg'] = fg_vals
         tp_vals = sorted(r[11] for r in all_players if r[11] is not None)
         sorted_stats['tp'] = tp_vals
+        ft_vals = sorted(r[12] for r in all_players if r[12] is not None)
+        sorted_stats['ft'] = ft_vals
 
         def calc_pctile(val, sorted_list):
             return round(sum(1 for v in sorted_list if v < val) * 100.0 / max(len(sorted_list), 1))
@@ -3419,6 +3472,9 @@ def main():
                 # 3PT% percentile (if available, 15+ 3PA)
                 if row[11] is not None and tp_vals:
                     pcts['tp'] = calc_pctile(row[11], tp_vals)
+                # FT% percentile (if available, 10+ FTA)
+                if row[12] is not None and ft_vals:
+                    pcts['ft'] = calc_pctile(row[12], ft_vals)
                 player_percentiles[name] = pcts
         print(f"  Computed percentiles for {len(player_percentiles)} {team_short} players (league: {len(all_players)})")
     except Exception as e:
