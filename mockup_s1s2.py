@@ -131,6 +131,7 @@ def prepare_circular_photo(pic_url, size=200, border_color=(180, 30, 30), border
 # Default team — can be overridden via CLI
 TEAM = "%Vasas%"
 COMP = "hun2a"
+SEASON = "x2526"
 
 
 class ScoutPDF(FPDF):
@@ -291,8 +292,9 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
         pos_label_std = "PF"
 
     # ── Layout: LEFT = non-scoring stats + note + tags, RIGHT = scoring panel ──
-    scoring_panel_w = 38 if player_zones else 0
-    left_w = cw - scoring_panel_w - (2 if player_zones else 0)
+    # Always show scoring panel (PPG/FG%/3FG%) — heatmap shows "No data" if player_zones is None
+    scoring_panel_w = 38
+    left_w = cw - scoring_panel_w - 2
 
     # Draw position badge (anchored to left_w area, not full cw)
     badge_color = pos_colors.get(pos_label_std, (120, 120, 120))
@@ -400,8 +402,8 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
             pdf.cell(tw, 3.5, label, align="C")
             tag_x += tw + 1.5
 
-    # --- RIGHT SIDE: Scoring Panel (zone heatmap) ---
-    if player_zones:
+    # --- RIGHT SIDE: Scoring Panel (always shown, heatmap only if shot data exists) ---
+    if True:
         import math
 
         sp_x = cx + left_w + 2
@@ -474,6 +476,15 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
         _top_badge(pdf, f"{tp_val}%", 8, 'tp', sp_x + 1 + 2 * third_w, sp_y + 3.5, third_w)
 
         # ── Mini zone heatmap court (same zone system as section 1.4) ──
+        # If no shot data, show placeholder and skip heatmap
+        if not player_zones or not any(d.get("total", 0) > 0 for d in player_zones.values()):
+            pdf.set_font("Arial", "I", 6)
+            pdf.set_text_color(160, 160, 160)
+            pdf.set_xy(sp_x + 2, sp_y + 14)
+            pdf.cell(sp_w - 4, sp_h - 18, "No shot data", align="C")
+            pdf.set_y(y_start + card_h + 2)
+            return
+
         def _sz_pct(key):
             d = player_zones.get(key, {"made": 0, "total": 0})
             m, t = d["made"], d["total"]
@@ -794,7 +805,7 @@ def main():
     matches = [m for m in all_matches if _tq in (m["team_a_name"] or "").lower() or _tq in (m["team_b_name"] or "").lower()]
 
     # Scrape standings from mkosz.hu
-    STANDINGS_URL = f"https://mkosz.hu/bajnoksag/x2526/{COMP}"
+    STANDINGS_URL = f"https://mkosz.hu/bajnoksag/{SEASON}/{COMP}"
     standings = []
     team_records = {}
     try:
@@ -896,11 +907,11 @@ def main():
     # Scrape match results from mkosz.hu (authoritative source for margin trend, PPG, etc.)
     mkosz_results = None
     if our_standing and our_standing.get("team_url"):
-        # Extract team_id from URL like /csapat/x2526/hun2a/9233/vasas-akademia
+        # Extract team_id from URL like /csapat/{season}/{comp}/{id}/slug
         _tid_m = re.search(r'/(\d{4,5})/', our_standing["team_url"])
         if _tid_m:
             mkosz_team_id = _tid_m.group(1)
-            mkosz_results = scrape_mkosz_results("x2526", COMP, mkosz_team_id, our_name)
+            mkosz_results = scrape_mkosz_results(SEASON, COMP, mkosz_team_id, our_name)
             if mkosz_results:
                 print(f"  Scraped {len(mkosz_results)} match results from mkosz.hu")
 
@@ -1415,6 +1426,7 @@ def main():
     conn.close()
 
     player_subzones = {}  # will be populated if shot data exists
+    player_shots_raw = {}  # player_name -> list of shot dicts (for dot overlay)
 
     if all_shots:
         import math
@@ -1882,6 +1894,13 @@ def main():
         pdf.cell(0, 3, f"Left: shot locations. Right: zone FG% heatmap (green=efficient, red=weak). {total_made}/{total_att} FG ({total_pct:.1f}%). FT excluded.")
         pdf.set_y(court_y + court_h + 6)
         pdf.set_auto_page_break(auto=True, margin=20)
+    else:
+        # No shot chart data (e.g. MEFOB)
+        pdf.subsection("1.4 Season Shot Chart")
+        pdf.set_font("Arial", "I", 9)
+        pdf.set_text_color(140, 140, 140)
+        pdf.cell(0, 12, "No shot chart data available for this competition.", align="C")
+        pdf.ln(14)
 
     # ── §1.5 LEAGUE COMPARISON ─────────────────────────────────
     # Aggregate team-level stats from PBP events for all teams in the competition
@@ -2127,7 +2146,7 @@ def main():
         # Fallback: try to construct from team name
         import re as _re
         slug = _re.sub(r'[^a-z0-9]+', '-', team_short.lower()).strip('-')
-        roster_url = f"https://mkosz.hu/csapat/x2526/{COMP}/0/{slug}"
+        roster_url = f"https://mkosz.hu/csapat/{SEASON}/{COMP}/0/{slug}"
         print(f"  Warning: no roster URL found, trying fallback: {roster_url}")
     _raw_roster_map = {}  # name -> {jersey, pos, height, birth_year, pic_url}
     try:
@@ -4463,15 +4482,27 @@ if __name__ == "__main__":
             if vs_idx + 1 < len(sys.argv):
                 vs_arg = sys.argv[vs_idx + 1]
                 VS_TEAM = f"%{vs_arg}%"
-                print(f"Generating scout report for: {team_arg} (vs {vs_arg})")
             else:
                 print("Error: --vs requires a team name argument")
                 sys.exit(1)
-        else:
-            print(f"Generating scout report for: {team_arg}")
+        # Parse --comp flag
+        if "--comp" in sys.argv:
+            comp_idx = sys.argv.index("--comp")
+            if comp_idx + 1 < len(sys.argv):
+                COMP = sys.argv[comp_idx + 1]
+        # Parse --season flag
+        if "--season" in sys.argv:
+            s_idx = sys.argv.index("--season")
+            if s_idx + 1 < len(sys.argv):
+                SEASON = sys.argv[s_idx + 1]
+        label = f"{team_arg} (comp={COMP})"
+        if VS_TEAM:
+            label += f" vs {sys.argv[sys.argv.index('--vs') + 1]}"
+        print(f"Generating scout report for: {label}")
     else:
-        print(f"Usage: python3 {sys.argv[0]} <team_name> [--vs <opponent>]")
+        print(f"Usage: python3 {sys.argv[0]} <team_name> [--comp <comp_code>] [--season <season>] [--vs <opponent>]")
         print(f"  e.g.: python3 {sys.argv[0]} Vasas")
         print(f"        python3 {sys.argv[0]} Vasas --vs TF-BP")
+        print(f"        python3 {sys.argv[0]} Közgáz --comp hun_univn")
         sys.exit(1)
     main()
