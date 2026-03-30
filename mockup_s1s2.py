@@ -331,8 +331,8 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
     pdf.cell(role_w, 5, role_line, align="R")
 
     # --- LEFT SIDE: Non-scoring stats (6 columns) ---
-    stat_labels = ["MPG", "RPG", "PF", "APG", "TOV", "A/TO"]
-    stat_keys =   ["mpg", "rpg", "fpg", "apg", "tpg", "_ato"]
+    stat_labels = ["MP/G", "RPG", "PF", "APG", "TOV", "A/TO"]
+    stat_keys =   ["_mpg_gp", "rpg", "fpg", "apg", "tpg", "_ato"]
     stat_pct_keys = ["mpg", "rpg", "fpg", "apg", "tpg", None]
     # Compute AST/TO ratio
     try:
@@ -340,7 +340,9 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
         _ato_str = f"{_ato:.1f}"
     except (ValueError, TypeError):
         _ato_str = "-"
-    stat_vals = [stats.get(k, "-") for k in stat_keys[:5]] + [_ato_str]
+    # MP/G shows as "X/Y" where X=avg minutes, Y=games played
+    _mpg_gp = f"{stats.get('mpg', '-')}/{stats.get('gp', '?')}"
+    stat_vals = [_mpg_gp] + [stats.get(k, "-") for k in ["rpg", "fpg", "apg", "tpg"]] + [_ato_str]
     col_w = left_w / 6
     y_s = y_start + 10
 
@@ -362,7 +364,9 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
 
     # Values + badges
     for i, val in enumerate(stat_vals):
-        pdf.set_font("Arial", "B", 8)
+        # MP/G uses smaller font for "X/Y" format
+        fs = 6.5 if "/" in str(val) else 8
+        pdf.set_font("Arial", "B", fs)
         pdf.set_xy(cx + i * col_w, y_s + 3.5)
         is_bad = False
         try:
@@ -2186,8 +2190,9 @@ def main():
                 pic_url = pic_match.group(1) if pic_match else ""
                 if "placeholder" in pic_url:
                     pic_url = ""
+                player_href = link.get("href", "") if link else ""
                 if name:
-                    _raw_roster_map[name] = {"jersey": jersey, "pos": pos, "height": height, "birth": birth, "pic_url": pic_url}
+                    _raw_roster_map[name] = {"jersey": jersey, "pos": pos, "height": height, "birth": birth, "pic_url": pic_url, "player_url": player_href}
         print(f"  Scraped {len(_raw_roster_map)} players from roster page")
     except Exception as e:
         print(f"  Roster scrape failed: {e}")
@@ -2276,6 +2281,56 @@ def main():
             "Zöldi Péter András": {"jersey": "2", "pos": "1-2", "height": "190", "birth": "2008"},
         }
         print("  Using fallback roster data")
+
+    # ── Scrape official MKOSZ player stats from individual player pages ──
+    # This is the authoritative source for GP, MPG, PPG, FG%, 3P%, FT%, RPG, APG, etc.
+    mkosz_player_stats = {}  # roster_name -> {gp, gs, ppg, fg_pct, tp_pct, ft_pct, rpg, apg, spg, tov, fpg, bpg, mpg, val}
+    try:
+        _scraped = 0
+        for rname, rdata in _raw_roster_map.items():
+            purl = rdata.get("player_url", "")
+            if not purl:
+                continue
+            try:
+                pr = requests.get(purl, timeout=8)
+                pr.encoding = "utf-8"
+                psoup = BeautifulSoup(pr.text, "html.parser")
+                ptable = psoup.find("table", class_="box-table")
+                if not ptable:
+                    continue
+                for tr in ptable.find_all("tr"):
+                    tds = tr.find_all("td")
+                    if tds and tds[0].get_text(strip=True) == "Á" and len(tds) >= 29:
+                        def _pf(idx):
+                            try: return float(tds[idx].get_text(strip=True).replace(",", "."))
+                            except: return 0.0
+                        gp_gs = tds[1].get_text(strip=True)  # "13/10"
+                        gp_parts = gp_gs.split("/")
+                        gp = int(gp_parts[0]) if gp_parts[0].isdigit() else 0
+                        gs = int(gp_parts[1]) if len(gp_parts) > 1 and gp_parts[1].isdigit() else 0
+                        mkosz_player_stats[rname] = {
+                            "gp": gp, "gs": gs,
+                            "ppg": _pf(2),
+                            "close_pct": _pf(5), "mid_pct": _pf(8),
+                            "tp_pct": _pf(11),   # 3PT%
+                            "fg_pct": _pf(14),    # overall FG%
+                            "ft_pct": _pf(17),    # FT%
+                            "dreb": _pf(18), "oreb": _pf(19), "rpg": _pf(20),
+                            "spg": _pf(21),       # steals
+                            "tov": _pf(22),       # turnovers
+                            "fpg": _pf(23),       # fouls SA (saját)
+                            "apg": _pf(25),       # assists (Gp = gólpassz)
+                            "bpg": _pf(26),       # blocks SA
+                            "val": _pf(28),
+                            "mpg": _pf(29),
+                        }
+                        _scraped += 1
+                        break
+            except:
+                continue
+        print(f"  Scraped MKOSZ stats for {_scraped}/{len(_raw_roster_map)} players")
+    except Exception as e:
+        print(f"  MKOSZ player stats scrape failed: {e}")
 
     # Determine projected starters from last 8 games
     # Logic: rank by start_rate (starts / games_played), not raw starts count.
@@ -2881,6 +2936,26 @@ def main():
             gp = len(pdata['games'])
             mpg = round(pdata['min'] / max(gp, 1))
             player_mpg_map[pname] = {"mpg": int(mpg), "gp": gp}
+
+        # Get full-season GP from events (more accurate than sub-only tracking)
+        mpg_cur.execute("""
+            SELECT e.player_name, COUNT(DISTINCT e.gamecode) as gp
+            FROM pbp_events e
+            JOIN matches m ON e.gamecode = m.gamecode
+            WHERE m.comp_code = ? AND e.player_name != ''
+              AND e.team = CASE WHEN m.team_a_name = ? THEN 'A' ELSE 'B' END
+              AND (m.team_a_name = ? OR m.team_b_name = ?)
+            GROUP BY e.player_name
+        """, (COMP, team_exact, team_exact, team_exact))
+        events_gp = {r[0]: r[1] for r in mpg_cur.fetchall()}
+        # Override GP with events-based count (full season, not just last 8)
+        for pname in player_mpg_map:
+            if pname in events_gp:
+                player_mpg_map[pname]["gp"] = events_gp[pname]
+        # Add players who have events but no sub data (played full game without subs)
+        for pname, gp in events_gp.items():
+            if pname not in player_mpg_map:
+                player_mpg_map[pname] = {"mpg": 0, "gp": gp}
 
         mpg_conn.close()
         print(f"  Computed MPG for {len(player_mpg_map)} players from sub tracking")
@@ -3528,16 +3603,38 @@ def main():
         return note.strip() if note.strip() else f"{pstats['ppg']} PPG, {pstats['rpg']} RPG."
 
     def _build_card_stats(name, pstats):
-        """Build stats dict for player_card from full stats."""
+        """Build stats dict for player_card. Prefer MKOSZ official stats, fallback to PBP."""
+        # Try MKOSZ official stats first (scraped from player pages)
+        # Need to resolve PBP name -> roster name for MKOSZ lookup
+        resolved = roster_map._resolve(name) if hasattr(roster_map, '_resolve') else name
+        ms = mkosz_player_stats.get(resolved) or mkosz_player_stats.get(name)
+        if ms and ms.get("gp", 0) > 0:
+            mpg_r = round(ms["mpg"])
+            return {
+                "mpg": str(mpg_r) if mpg_r > 0 else "-",
+                "gp": str(ms["gp"]),
+                "ppg": str(ms["ppg"]),
+                "fg": str(int(ms["fg_pct"])) if ms["fg_pct"] > 0 else "0",
+                "3p": str(int(ms["tp_pct"])) if ms["tp_pct"] > 0 else "-",
+                "ft": str(int(ms["ft_pct"])) if ms["ft_pct"] > 0 else "-",
+                "rpg": str(ms["rpg"]),
+                "apg": str(ms["apg"]),
+                "tpg": str(ms["tov"]),
+                "fpg": str(ms["fpg"]),
+            }
+        # Fallback to PBP-computed stats
         mpg_val = player_mpg_map.get(name, {}).get("mpg", 0)
+        gp_val = player_mpg_map.get(name, {}).get("gp", 0)
         mpg = str(int(mpg_val)) if mpg_val > 0 else "-"
+        gp_str = str(gp_val) if gp_val > 0 else "?"
         if not pstats:
-            return {"mpg": mpg, "ppg": "0", "fg": "0", "3p": "-", "ft": "-",
+            return {"mpg": mpg, "gp": gp_str, "ppg": "0", "fg": "0", "3p": "-", "ft": "-",
                     "rpg": "0", "apg": "0", "tpg": "0", "fpg": "0"}
         three_display = str(int(pstats['three_pct'])) if pstats['three_att_total'] > 5 else "-"
         ft_display = str(int(pstats['ft_pct'])) if pstats['ft_pct'] > 0 else "-"
         return {
             "mpg": mpg,
+            "gp": gp_str,
             "ppg": str(pstats['ppg']),
             "fg": str(int(pstats['fg_pct'])),
             "3p": three_display,
