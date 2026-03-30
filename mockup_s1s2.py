@@ -226,7 +226,7 @@ def opp_name(m, s):
     return m["team_b_name"] if s == "A" else m["team_a_name"]
 
 
-def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_path=None, height=None, pos=None, strengths=None, player_zones=None, percentiles=None, player_shots=None):
+def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_path=None, height=None, pos=None, strengths=None, player_zones=None, percentiles=None, player_shots=None, scout_notes=None):
     """Render a player card with optional photo, strength tags, zone heatmap, and league percentiles.
     strengths: list of (label, color_tuple)
     player_zones: dict of zone_key -> {"made": N, "total": N} (same format as team subzone_data)
@@ -238,7 +238,11 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
     y_start = pdf.get_y()
 
     # Fixed card height for consistent layout
-    card_h = 56
+    _has_notes = scout_notes and (scout_notes[0] or scout_notes[1])
+    _note_lines = 0
+    if _has_notes:
+        _note_lines = len(scout_notes[0]) + len(scout_notes[1])
+    card_h = 38 + max(0, _note_lines) * 3.5 if _has_notes else 38
     if y_start + card_h > pdf.h - 20:
         pdf.add_page()
         y_start = pdf.get_y()
@@ -251,21 +255,21 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
     pdf.set_fill_color(180, 30, 30) if is_starter else pdf.set_fill_color(160, 160, 160)
     pdf.rect(x0, y_start, 2, card_h, "F")
 
-    # Photo — circular crop, or "NO PIC" placeholder
-    ph = card_h - 4  # photo size in mm (square)
+    # Photo — fixed size, vertically centered in card
+    ph = 18  # fixed photo size in mm
     import os
+    _photo_x = x0 + 4
+    _photo_y = y_start + (card_h - ph) / 2  # vertically centered
     if photo_path and os.path.exists(photo_path):
-        pdf.image(photo_path, x0 + 4, y_start + 2, ph, ph)
+        pdf.image(photo_path, _photo_x, _photo_y, ph, ph)
     else:
         # Draw gray circle placeholder with "NO PIC" text
-        cx_ph = x0 + 4 + ph / 2
-        cy_ph = y_start + 2 + ph / 2
         pdf.set_fill_color(220, 220, 225)
         pdf.set_draw_color(180, 180, 185)
-        pdf.ellipse(x0 + 4, y_start + 2, ph, ph, "FD")
+        pdf.ellipse(_photo_x, _photo_y, ph, ph, "FD")
         pdf.set_font("Arial", "B", 5)
         pdf.set_text_color(140, 140, 140)
-        pdf.set_xy(x0 + 4, y_start + 2 + ph / 2 - 2)
+        pdf.set_xy(_photo_x, _photo_y + ph / 2 - 2)
         pdf.cell(ph, 4, "NO PIC", align="C")
     photo_w = ph + 4
 
@@ -330,10 +334,10 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
     pdf.set_text_color(120, 120, 120)
     pdf.cell(role_w, 5, role_line, align="R")
 
-    # --- LEFT SIDE: Non-scoring stats (6 columns) ---
-    stat_labels = ["MP/G", "RPG", "PF", "APG", "TOV", "A/TO"]
-    stat_keys =   ["_mpg_gp", "rpg", "fpg", "apg", "tpg", "_ato"]
-    stat_pct_keys = ["mpg", "rpg", "fpg", "apg", "tpg", None]
+    # --- LEFT SIDE: Non-scoring stats (9 columns) ---
+    # Groups: [MP/G] [DREB OREB RPG] [APG TOV A/TO] [PF FD]
+    stat_labels = ["MP/G", "DREB", "OREB", "RPG", "APG", "TOV", "A/TO", "PF", "FD"]
+    stat_pct_keys = ["mpg", "dreb", "oreb", "rpg", "apg", "tpg", None, "fpg", "fdpg"]
     # Compute AST/TO ratio
     try:
         _ato = round(float(stats.get("apg", 0)) / float(stats.get("tpg", 0)), 1) if float(stats.get("tpg", 0)) > 0 else 0
@@ -342,21 +346,30 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
         _ato_str = "-"
     # MP/G shows as "X/Y" where X=avg minutes, Y=games played
     _mpg_gp = f"{stats.get('mpg', '-')}/{stats.get('gp', '?')}"
-    stat_vals = [_mpg_gp] + [stats.get(k, "-") for k in ["rpg", "fpg", "apg", "tpg"]] + [_ato_str]
-    col_w = left_w / 6
+    stat_vals = [_mpg_gp, stats.get("dreb", "-"), stats.get("oreb", "-"), stats.get("rpg", "-"),
+                 stats.get("apg", "-"), stats.get("tpg", "-"), _ato_str, stats.get("fpg", "-"), stats.get("fdpg", "-")]
+    col_w = left_w / 9
     y_s = y_start + 10
 
-    # Draw thin border around APG/TOV/A-TO group (columns 3-5, 0-indexed)
-    group_x = cx + 3 * col_w - 0.5
-    group_w = 3 * col_w + 1
-    group_y = y_s - 0.5
-    group_h = 12
+    # Draw thin border around DREB/OREB/RPG group (columns 1-3)
     pdf.set_draw_color(180, 180, 180)
     pdf.set_line_width(0.25)
-    pdf.rect(group_x, group_y, group_w, group_h, "D")
+    grp1_x = cx + 1 * col_w - 0.5
+    grp1_w = 3 * col_w + 1
+    group_y = y_s - 0.5
+    group_h = 12
+    pdf.rect(grp1_x, group_y, grp1_w, group_h, "D")
+    # Draw thin border around APG/TOV/A-TO group (columns 4-6)
+    grp2_x = cx + 4 * col_w - 0.5
+    grp2_w = 3 * col_w + 1
+    pdf.rect(grp2_x, group_y, grp2_w, group_h, "D")
+    # Draw thin border around PF/FD group (columns 7-8)
+    grp3_x = cx + 7 * col_w - 0.5
+    grp3_w = 2 * col_w + 1
+    pdf.rect(grp3_x, group_y, grp3_w, group_h, "D")
 
     # Labels
-    pdf.set_font("Arial", "B", 5.5)
+    pdf.set_font("Arial", "B", 4.5)
     pdf.set_text_color(110, 110, 110)
     for i, lbl in enumerate(stat_labels):
         pdf.set_xy(cx + i * col_w, y_s)
@@ -377,29 +390,62 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
         pdf.set_text_color(200, 60, 60) if is_bad else pdf.set_text_color(30, 30, 30)
         pdf.cell(col_w, 4.5, str(val), align="C")
 
-        # Percentile "top X%" badge
+        # Percentile "top X%" badge — only show if top 20% (green) or bottom 20% (red)
         pct_key = stat_pct_keys[i]
         if percentiles and pct_key and pct_key in percentiles:
             pctv = percentiles[pct_key]
             invert = stat_labels[i] in ("TOV", "PF")
             display_pct = 100 - pctv if invert else pctv
-            if display_pct >= 70:
+            # Only show badge for top 20% or bottom 20%
+            if display_pct >= 80:
                 cr, cg, cb = 34, 139, 34
-            elif display_pct <= 30:
+                badge_text = f"top {100 - display_pct}%"
+            elif display_pct <= 20:
                 cr, cg, cb = 200, 60, 50
+                badge_text = f"top {100 - display_pct}%"
             else:
-                cr, cg, cb = 140, 140, 140
-            badge_text = f"top {100 - display_pct}%"
-            pdf.set_font("Arial", "B", 4)
-            btw = pdf.get_string_width(badge_text) + 2
-            bth = 2.5
-            btx = cx + i * col_w + (col_w - btw) / 2
-            bty = y_s + 8
-            pdf.set_fill_color(cr, cg, cb)
-            pdf.rect(btx, bty, btw, bth, "F")
-            pdf.set_text_color(255, 255, 255)
-            pdf.set_xy(btx, bty + 0.15)
-            pdf.cell(btw, bth - 0.3, badge_text, align="C")
+                cr, cg, cb = None, None, None
+                badge_text = None
+            if badge_text:
+                pdf.set_font("Arial", "B", 4)
+                btw = pdf.get_string_width(badge_text) + 2
+                bth = 2.5
+                btx = cx + i * col_w + (col_w - btw) / 2
+                bty = y_s + 8
+                pdf.set_fill_color(cr, cg, cb)
+                pdf.rect(btx, bty, btw, bth, "F")
+                pdf.set_text_color(255, 255, 255)
+                pdf.set_xy(btx, bty + 0.15)
+                pdf.cell(btw, bth - 0.3, badge_text, align="C")
+
+    # Scout notes (between stats and strength tags)
+    if _has_notes:
+        atk_notes, def_notes = scout_notes
+        _note_y = y_s + 12.5
+        for ni, n in enumerate(atk_notes):
+            pdf.set_xy(cx, _note_y)
+            if ni == 0:
+                pdf.set_font("Arial", "B", 5.5)
+                pdf.set_text_color(200, 60, 50)
+                pdf.cell(7, 3.5, "ATK")
+            else:
+                pdf.cell(7, 3.5, "")
+            pdf.set_font("Arial", "", 5.5)
+            pdf.set_text_color(60, 60, 60)
+            pdf.cell(left_w - 7, 3.5, f"\u2022 {n}")
+            _note_y += 3.5
+        for ni, n in enumerate(def_notes):
+            pdf.set_xy(cx, _note_y)
+            if ni == 0:
+                pdf.set_font("Arial", "B", 5.5)
+                pdf.set_text_color(34, 139, 34)
+                pdf.cell(7, 3.5, "DEF")
+            else:
+                pdf.cell(7, 3.5, "")
+            pdf.set_font("Arial", "", 5.5)
+            pdf.set_text_color(60, 60, 60)
+            pdf.cell(left_w - 7, 3.5, f"\u2022 {n}")
+            _note_y += 3.5
 
     # Strength tags (left side, bottom) — uniform dark gray
     if strengths:
@@ -449,24 +495,26 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
             pdf.cell(bw, 4.5, val_text, align="C")
             if percentiles and pct_key in percentiles:
                 pctv = percentiles[pct_key]  # 0-100, higher = better
-                # Color based on pctv directly (higher = greener)
-                if pctv >= 70:
-                    cr, cg, cb = 34, 139, 34    # green — top quartile
-                elif pctv <= 30:
-                    cr, cg, cb = 200, 60, 50    # red — bottom quartile
+                # Only show badge for top 20% (green) or bottom 20% (red)
+                if pctv >= 80:
+                    cr, cg, cb = 34, 139, 34
+                    badge_text = f"top {100 - pctv}%"
+                elif pctv <= 20:
+                    cr, cg, cb = 200, 60, 50
+                    badge_text = f"top {100 - pctv}%"
                 else:
-                    cr, cg, cb = 140, 140, 140  # gray — middle
-                badge_text = f"top {100 - pctv}%"
-                pdf.set_font("Arial", "B", 5)
-                btw = pdf.get_string_width(badge_text) + 2.5
-                bth = 3
-                btx = bx + (bw - btw) / 2
-                bty = by + 5
-                pdf.set_fill_color(cr, cg, cb)
-                pdf.rect(btx, bty, btw, bth, "F")
-                pdf.set_text_color(255, 255, 255)
-                pdf.set_xy(btx, bty + 0.2)
-                pdf.cell(btw, bth - 0.4, badge_text, align="C")
+                    badge_text = None
+                if badge_text:
+                    pdf.set_font("Arial", "B", 5)
+                    btw = pdf.get_string_width(badge_text) + 2.5
+                    bth = 3
+                    btx = bx + (bw - btw) / 2
+                    bty = by + 5
+                    pdf.set_fill_color(cr, cg, cb)
+                    pdf.rect(btx, bty, btw, bth, "F")
+                    pdf.set_text_color(255, 255, 255)
+                    pdf.set_xy(btx, bty + 0.2)
+                    pdf.cell(btw, bth - 0.4, badge_text, align="C")
 
         # PPG column
         pdf.set_xy(sp_x + 1, sp_y + 1)
@@ -1081,14 +1129,45 @@ def main():
     pdf.cell(0, 8, f"Based on {len(matches) or len(mkosz_results)} games  |  Data through {_data_through}", align="C")
     pdf.ln(10)
 
-    # Big record display
+    # Big record display — green wins, gray dash, red losses
+    _rec_y = pdf.get_y()
     pdf.set_font("Arial", "B", 36)
-    pdf.set_text_color(180, 30, 30)
-    pdf.cell(0, 18, f"{wins}-{losses}", align="C")
+    _w_str = str(wins)
+    _l_str = str(losses)
+    _dash = "-"
+    _w_w = pdf.get_string_width(_w_str)
+    _d_w = pdf.get_string_width(_dash)
+    _l_w = pdf.get_string_width(_l_str)
+    _total_w = _w_w + _d_w + _l_w
+    _rec_x = (pdf.w - _total_w) / 2
+    pdf.set_xy(_rec_x, _rec_y)
+    pdf.set_text_color(34, 139, 34)  # green wins
+    pdf.cell(_w_w, 18, _w_str)
+    pdf.set_text_color(150, 150, 150)  # gray dash
+    pdf.cell(_d_w, 18, _dash)
+    pdf.set_text_color(200, 60, 50)  # red losses
+    pdf.cell(_l_w, 18, _l_str)
     pdf.ln(14)
+
+    # Place | Streak | PPG / OPPG — each part colored
     pdf.set_font("Arial", "", 11)
-    pdf.set_text_color(100, 100, 100)
-    pdf.cell(0, 7, f"{our_pos}. place  |  {'W' if streak_type else 'L'}{streak_ct} streak  |  {ppg:.1f} PPG / {papg:.1f} OPPG", align="C")
+    _streak_label = f"{'W' if streak_type else 'L'}{streak_ct}"
+    _parts = [
+        (f"{our_pos}. place  |  ", (100, 100, 100)),
+        (_streak_label, (34, 139, 34) if streak_type else (200, 60, 50)),
+        (" streak  |  ", (100, 100, 100)),
+        (f"{ppg:.1f}", (34, 139, 34)),
+        (" PPG / ", (100, 100, 100)),
+        (f"{papg:.1f}", (200, 60, 50)),
+        (" OPPG", (100, 100, 100)),
+    ]
+    _info_total = sum(pdf.get_string_width(t) for t, _ in _parts)
+    _info_x = (pdf.w - _info_total) / 2
+    _info_y = pdf.get_y()
+    pdf.set_xy(_info_x, _info_y)
+    for _txt, (_r, _g, _b) in _parts:
+        pdf.set_text_color(_r, _g, _b)
+        pdf.cell(pdf.get_string_width(_txt), 7, _txt)
 
     # ── §1 TEAM OVERVIEW ─────────────────────────────────────────
     pdf.add_page()
@@ -2319,6 +2398,7 @@ def main():
                             "spg": _pf(21),       # steals
                             "tov": _pf(22),       # turnovers
                             "fpg": _pf(23),       # fouls SA (saját)
+                            "fdpg": _pf(24),      # fouls drawn (ellene elkövetett)
                             "apg": _pf(25),       # assists (Gp = gólpassz)
                             "bpg": _pf(26),       # blocks SA
                             "val": _pf(28),
@@ -3493,10 +3573,13 @@ def main():
                          WHEN event_type='FT_MADE' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.gamecode) as ppg,
                 SUM(CASE WHEN event_type='AST' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.gamecode) as apg,
                 SUM(CASE WHEN event_type IN ('OREB','DREB') THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.gamecode) as rpg,
+                SUM(CASE WHEN event_type='DREB' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.gamecode) as dreb,
+                SUM(CASE WHEN event_type='OREB' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.gamecode) as oreb,
                 SUM(CASE WHEN event_type='STL' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.gamecode) as spg,
                 SUM(CASE WHEN event_type='BLK' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.gamecode) as bpg,
                 SUM(CASE WHEN event_type='TOV' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.gamecode) as topg,
                 SUM(CASE WHEN event_type='FOUL' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.gamecode) as fpg,
+                SUM(CASE WHEN event_type='FOUL_DRAWN' THEN 1 ELSE 0 END)*1.0 / COUNT(DISTINCT e.gamecode) as fdpg,
                 CASE WHEN SUM(CASE WHEN event_type IN ('CLOSE_MADE','MID_MADE','DUNK_MADE','THREE_MADE',
                     'CLOSE_MISS','MID_MISS','DUNK_MISS','THREE_MISS') THEN 1 ELSE 0 END) >= 30
                     THEN ROUND(SUM(CASE WHEN event_type IN ('CLOSE_MADE','MID_MADE','DUNK_MADE','THREE_MADE') THEN 1 ELSE 0 END)*100.0 /
@@ -3518,15 +3601,16 @@ def main():
         all_players = pct_cur.fetchall()
         pbp_pct.close()
 
-        # Build sorted lists for each stat (fg_pct at index 10, tp_pct at index 11, skip NULLs)
-        stat_indices = {'ppg': 3, 'apg': 4, 'rpg': 5, 'spg': 6, 'bpg': 7, 'tpg': 8, 'fpg': 9}
+        # Build sorted lists for each stat
+        # Indices: 3=ppg, 4=apg, 5=rpg, 6=dreb, 7=oreb, 8=spg, 9=bpg, 10=tpg, 11=fpg, 12=fdpg, 13=fg_pct, 14=tp_pct, 15=ft_pct
+        stat_indices = {'ppg': 3, 'apg': 4, 'rpg': 5, 'dreb': 6, 'oreb': 7, 'spg': 8, 'bpg': 9, 'tpg': 10, 'fpg': 11, 'fdpg': 12}
         sorted_stats = {k: sorted(r[v] for r in all_players) for k, v in stat_indices.items()}
-        # FG% and 3PT% separately (skip NULLs)
-        fg_vals = sorted(r[10] for r in all_players if r[10] is not None)
+        # FG%, 3PT%, FT% separately (skip NULLs)
+        fg_vals = sorted(r[13] for r in all_players if r[13] is not None)
         sorted_stats['fg'] = fg_vals
-        tp_vals = sorted(r[11] for r in all_players if r[11] is not None)
+        tp_vals = sorted(r[14] for r in all_players if r[14] is not None)
         sorted_stats['tp'] = tp_vals
-        ft_vals = sorted(r[12] for r in all_players if r[12] is not None)
+        ft_vals = sorted(r[15] for r in all_players if r[15] is not None)
         sorted_stats['ft'] = ft_vals
 
         def calc_pctile(val, sorted_list):
@@ -3542,14 +3626,14 @@ def main():
                 for stat_key, idx in stat_indices.items():
                     pcts[stat_key] = calc_pctile(row[idx], sorted_stats[stat_key])
                 # FG% percentile (if available)
-                if row[10] is not None and fg_vals:
-                    pcts['fg'] = calc_pctile(row[10], fg_vals)
+                if row[13] is not None and fg_vals:
+                    pcts['fg'] = calc_pctile(row[13], fg_vals)
                 # 3PT% percentile (if available, 15+ 3PA)
-                if row[11] is not None and tp_vals:
-                    pcts['tp'] = calc_pctile(row[11], tp_vals)
+                if row[14] is not None and tp_vals:
+                    pcts['tp'] = calc_pctile(row[14], tp_vals)
                 # FT% percentile (if available, 10+ FTA)
-                if row[12] is not None and ft_vals:
-                    pcts['ft'] = calc_pctile(row[12], ft_vals)
+                if row[15] is not None and ft_vals:
+                    pcts['ft'] = calc_pctile(row[15], ft_vals)
                 player_percentiles[name] = pcts
         print(f"  Computed percentiles for {len(player_percentiles)} {team_short} players (league: {len(all_players)})")
     except Exception as e:
@@ -3617,10 +3701,13 @@ def main():
                 "fg": str(int(ms["fg_pct"])) if ms["fg_pct"] > 0 else "0",
                 "3p": str(int(ms["tp_pct"])) if ms["tp_pct"] > 0 else "-",
                 "ft": str(int(ms["ft_pct"])) if ms["ft_pct"] > 0 else "-",
+                "dreb": str(ms["dreb"]),
+                "oreb": str(ms["oreb"]),
                 "rpg": str(ms["rpg"]),
                 "apg": str(ms["apg"]),
                 "tpg": str(ms["tov"]),
                 "fpg": str(ms["fpg"]),
+                "fdpg": str(ms.get("fdpg", 0)),
             }
         # Fallback to PBP-computed stats
         mpg_val = player_mpg_map.get(name, {}).get("mpg", 0)
@@ -3629,7 +3716,7 @@ def main():
         gp_str = str(gp_val) if gp_val > 0 else "?"
         if not pstats:
             return {"mpg": mpg, "gp": gp_str, "ppg": "0", "fg": "0", "3p": "-", "ft": "-",
-                    "rpg": "0", "apg": "0", "tpg": "0", "fpg": "0"}
+                    "dreb": "0", "oreb": "0", "rpg": "0", "apg": "0", "tpg": "0", "fpg": "0", "fdpg": "0"}
         three_display = str(int(pstats['three_pct'])) if pstats['three_att_total'] > 5 else "-"
         ft_display = str(int(pstats['ft_pct'])) if pstats['ft_pct'] > 0 else "-"
         return {
@@ -3639,10 +3726,13 @@ def main():
             "fg": str(int(pstats['fg_pct'])),
             "3p": three_display,
             "ft": ft_display,
+            "dreb": str(pstats.get('dreb_pg', 0)),
+            "oreb": str(pstats.get('oreb_pg', 0)),
             "rpg": str(pstats['rpg']),
             "apg": str(pstats['apg']),
             "tpg": str(pstats['tpg']),
             "fpg": str(pstats['fpg']),
+            "fdpg": str(pstats.get('ft_drawn_pg', 0)),
         }
 
     # Build starters list from projected_five
@@ -3694,11 +3784,15 @@ def main():
             continue
         gp_last8 = player_mpg_map.get(pname, {}).get("gp", 0)
         mpg = player_mpg_map.get(pname, {}).get("mpg", 0)
+        # Also check full-season stats from player_full_stats or MKOSZ scrape
+        gp_season = player_full_stats.get(pname, {}).get("gp", 0)
+        ppg_season = player_full_stats.get(pname, {}).get("ppg", 0)
         # Count total sub appearances for this player
         total_sub_in = sum(cnt for sname in starter_names
                           for bname, cnt in sub_pairs.get(sname, [])
                           if bname == pname)
-        if gp_last8 >= 4 or mpg >= 10:
+        # Rotation if: played 4+ of last 8, OR MPG >= 10, OR significant season contributor (5+ GP and 8+ PPG)
+        if gp_last8 >= 4 or mpg >= 10 or (gp_season >= 5 and ppg_season >= 8):
             rotation_players.append((pname, mpg, gp_last8, total_sub_in))
         else:
             bench_only_players.append((pname, mpg, gp_last8, total_sub_in))
@@ -3755,6 +3849,112 @@ def main():
         if path:
             card_photo_paths[pname] = path
 
+    def _generate_scout_notes(pname, pstats, full_stats):
+        """Generate detailed tactical scouting notes from stats."""
+        notes_atk = []
+        notes_def = []
+        try:
+            ppg = float(pstats.get("ppg", 0))
+            fg = float(pstats.get("fg", 0))
+            tp = float(pstats.get("3p", 0) or 0) if pstats.get("3p", "-") != "-" else 0
+            ft = float(pstats.get("ft", 0) or 0) if pstats.get("ft", "-") != "-" else 0
+            apg = float(pstats.get("apg", 0))
+            tpg = float(pstats.get("tpg", 0))
+            rpg = float(pstats.get("rpg", 0))
+            dreb = float(pstats.get("dreb", 0))
+            oreb = float(pstats.get("oreb", 0))
+            fpg_v = float(pstats.get("fpg", 0))
+            fdpg = float(pstats.get("fdpg", 0))
+        except (ValueError, TypeError):
+            return [], []
+        fs = full_stats or {}
+        spg = fs.get("spg", 0) or 0
+        bpg = fs.get("bpg", 0) or 0
+        ato = apg / tpg if tpg > 0 else 0
+
+        # ── OFFENSIVE ANALYSIS ──
+        # Scoring volume & role
+        if ppg >= 18:
+            notes_atk.append(f"Elsőszámú ponterő ({ppg:.1f} PPG) — dupla fedezés szükséges lehet csúcsformában")
+        elif ppg >= 12:
+            notes_atk.append(f"Megbízható ponterő ({ppg:.1f} PPG) — mindig figyelni kell rá a dobóhelyzetekben")
+        elif ppg >= 7:
+            notes_atk.append(f"Közepes ponterő ({ppg:.1f} PPG) — nem az első opció, de képes büntetni ha szabadon hagyják")
+
+        # Shooting efficiency + tendencies
+        if fg >= 55 and ppg >= 8:
+            notes_atk.append(f"Rendkívül hatékony dobó (FG {fg:.0f}%) — ne engedjétek könnyű pozícióba, minden dobása veszélyes")
+        elif fg >= 45 and ppg >= 8:
+            notes_atk.append(f"Jó hatékonyság (FG {fg:.0f}%) — tudja hol kell dobni, válogatós a dobásaiban")
+        elif fg <= 38 and ppg >= 5:
+            notes_atk.append(f"Gyenge hatékonyság (FG {fg:.0f}%) — engedjétek dobni, a százaléka nektek dolgozik")
+
+        # 3PT analysis
+        if tp >= 40 and pstats.get("3p", "-") != "-":
+            notes_atk.append(f"Veszélyes tripladobó ({tp:.0f}%) — szoros kizárás a vonalon túl, ne segítsetek róla")
+        elif tp >= 33 and pstats.get("3p", "-") != "-":
+            notes_atk.append(f"Átlagos tripladobó ({tp:.0f}%) — kontesztáljátok a dobásait de nem kell túlzottan félni tőle")
+        elif 0 < tp <= 25 and pstats.get("3p", "-") != "-":
+            notes_atk.append(f"Gyenge tripladobó ({tp:.0f}%) — segíthettek róla a betörésnél, nem fog büntetni kintről")
+
+        # FT tactical value
+        if ft <= 55 and ft > 0 and fdpg >= 2:
+            notes_atk.append(f"Gyenge büntetődobó ({ft:.0f}%) de sokat jár a vonalra ({fdpg:.1f} FD/g) — hack-a-player szituációban faultolható")
+        elif ft >= 80 and fdpg >= 2.5:
+            notes_atk.append(f"Kiváló büntetődobó ({ft:.0f}%) és sokat jár a vonalra ({fdpg:.1f} FD/g) — ne faultold, vonalról büntet")
+        elif fdpg >= 3:
+            notes_atk.append(f"Sok faultot harcol ki ({fdpg:.1f} FD/g) — fegyelmezetten kell védekezni ellene, kerülni a felesleges kontaktot")
+
+        # Playmaking
+        if apg >= 5:
+            notes_atk.append(f"Kiváló irányító ({apg:.1f} APG) — passzsávok lezárása kritikus, társait is veszélyessé teszi")
+        elif apg >= 3:
+            notes_atk.append(f"Jó passzolózseni ({apg:.1f} APG) — nemcsak pont, assziszttal is veszélyes, figyeljetek a lerakásokra")
+
+        # Turnovers
+        if tpg >= 3.5:
+            notes_atk.append(f"Gyakran adja el ({tpg:.1f} TOV) — nyomás alá helyezve hibázik, preszelt védekezéssel kényszeríthető")
+        elif tpg >= 2.5 and ato < 1.5:
+            notes_atk.append(f"Rossz A/TO arány ({ato:.1f}) — döntéshozatal gyenge pont, trap-elhető")
+
+        # Rebounding on offense
+        if oreb >= 2.0:
+            notes_atk.append(f"Agresszív támadó lepattanózó ({oreb:.1f} OREB/g) — kiboxolás kötelező, 2. esélyt teremt a csapatnak")
+        elif oreb >= 1.2:
+            notes_atk.append(f"Jár a támadó palánkra ({oreb:.1f} OREB/g) — figyeljetek a putbackekre")
+
+        # ── DEFENSIVE ANALYSIS ──
+        if spg >= 2.0:
+            notes_def.append(f"Kiváló labdaszerzés ({spg:.1f} STL/g) — nagyon aktív kéz, kerüljétek a laza passzokat és a dribble-t előtte")
+        elif spg >= 1.2:
+            notes_def.append(f"Aktív kéz védekezésben ({spg:.1f} STL/g) — óvatos labdakezelés szükséges ellene")
+
+        if bpg >= 1.5:
+            notes_def.append(f"Domináns blokkoló ({bpg:.1f} BLK/g) — kerüljétek a direkt palánk alatti befejezéseket, pumpfake hatásos")
+        elif bpg >= 0.8:
+            notes_def.append(f"Blokkoló jelenlét ({bpg:.1f} BLK/g) — számítsatok rá a kosár körüli dobásoknál")
+
+        if dreb >= 5:
+            notes_def.append(f"Domináns védő lepattanózó ({dreb:.1f} DREB/g) — nehéz 2. esélyt szerezni ellene, boxolás kritikus")
+        elif dreb >= 3:
+            notes_def.append(f"Jó védő lepattanózó ({dreb:.1f} DREB/g) — tudatosan kell a lepattanóba menni ellene")
+
+        if fpg_v <= 1.0 and fpg_v > 0:
+            notes_def.append(f"Fegyelmezett védő ({fpg_v:.1f} PF/g) — nehéz kikapni faultokkal, nem ad ajándék vonalakat")
+        elif fpg_v >= 3.5:
+            notes_def.append(f"Sokat faultol ({fpg_v:.1f} PF/g) — agresszív támadással faultbajba hozható, 4. faultnál óvatosabb lesz")
+
+        # Combined insight
+        if rpg >= 6 and ppg >= 10:
+            notes_def.append(f"Double-double veszély ({ppg:.1f}p + {rpg:.1f}r) — mindkét palánkon domináns jelenlét")
+
+        return notes_atk[:4], notes_def[:3]
+
+    def _get_scout_notes(pname, pstats):
+        fs = player_full_stats.get(pname, {})
+        atk, dfn = _generate_scout_notes(pname, pstats, fs)
+        return (atk, dfn) if (atk or dfn) else None
+
     for jersey, name, role, stats, note in starters:
         r = roster_map.get(name, {})
         player_card(pdf, name, jersey, role, stats, note, is_starter=True,
@@ -3763,7 +3963,8 @@ def main():
                     strengths=player_strengths.get(name),
                     player_zones=player_subzones.get(name),
                     percentiles=player_percentiles.get(name),
-                    player_shots=player_shots_raw.get(name))
+                    player_shots=player_shots_raw.get(name),
+                    scout_notes=_get_scout_notes(name, stats))
 
     # ROTATION — key bench players who get regular minutes
     pdf.ln(2)
@@ -3780,7 +3981,8 @@ def main():
                     strengths=player_strengths.get(name),
                     player_zones=player_subzones.get(name),
                     percentiles=player_percentiles.get(name),
-                    player_shots=player_shots_raw.get(name))
+                    player_shots=player_shots_raw.get(name),
+                    scout_notes=_get_scout_notes(name, stats))
 
     # BENCH — situational / fringe players
     pdf.ln(2)
@@ -3797,7 +3999,8 @@ def main():
                     strengths=player_strengths.get(name),
                     player_zones=player_subzones.get(name),
                     percentiles=player_percentiles.get(name),
-                    player_shots=player_shots_raw.get(name))
+                    player_shots=player_shots_raw.get(name),
+                    scout_notes=_get_scout_notes(name, stats))
 
     # ── §3 HEAD-TO-HEAD ANALYSIS ─────────────────────────────────
     if VS_TEAM:
