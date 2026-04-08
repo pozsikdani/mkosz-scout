@@ -2217,30 +2217,15 @@ def main():
 
         def _pb_data_row(y, label, stat_pct, stat_pg, stat_rank_hib, bg_color=None):
             """Draw a data row with values for our team (and vs if present).
-            Cells colored green/red relative to each other when --vs is used."""
+            bg_color applies to both value cells (green for success rows, red for fail rows)."""
             our_val = _pb_our[stat_pct]
             our_pg = _pb_our[stat_pg] if stat_pg else None
             our_rk = _pb_rank(_pb_our_key, stat_pct, stat_rank_hib)
 
-            vs_val = _pb_vs[stat_pct] if _pb_vs else None
-            vs_pg = _pb_vs[stat_pg] if _pb_vs and stat_pg else None
-            vs_rk = _pb_rank(_pb_vs_key, stat_pct, stat_rank_hib) if _pb_vs else None
-
-            # Determine who is better for coloring
-            green_bg = (215, 240, 215)
-            red_bg = (245, 220, 220)
-            neutral_bg = (248, 248, 250)
-
-            if _pb_vs and abs(our_val - vs_val) > 0.3:
-                our_is_better = (our_val > vs_val) == stat_rank_hib
-                our_bg = green_bg if our_is_better else red_bg
-                vs_bg = red_bg if our_is_better else green_bg
-            else:
-                our_bg = neutral_bg
-                vs_bg = neutral_bg
+            cell_bg = bg_color or (248, 248, 250)
 
             # Label column
-            pdf.set_fill_color(*neutral_bg)
+            pdf.set_fill_color(248, 248, 250)
             pdf.rect(x0, y, label_w, row_h, "F")
             pdf.set_font("Arial", "", 6)
             pdf.set_text_color(80, 80, 80)
@@ -2248,7 +2233,7 @@ def main():
             pdf.cell(label_w - 4, row_h - 2, label)
 
             # Our value cell
-            pdf.set_fill_color(*our_bg)
+            pdf.set_fill_color(*cell_bg)
             pdf.rect(x0 + label_w, y, val_w, row_h, "F")
             pdf.set_font("Arial", "B", 6.5)
             pdf.set_text_color(30, 30, 30)
@@ -2260,7 +2245,10 @@ def main():
 
             # VS value cell
             if _pb_vs:
-                pdf.set_fill_color(*vs_bg)
+                vs_val = _pb_vs[stat_pct]
+                vs_pg = _pb_vs[stat_pg] if stat_pg else None
+                vs_rk = _pb_rank(_pb_vs_key, stat_pct, stat_rank_hib)
+                pdf.set_fill_color(*cell_bg)
                 pdf.rect(x0 + label_w + val_w, y, val_w, row_h, "F")
                 pdf.set_font("Arial", "B", 6.5)
                 pdf.set_text_color(30, 30, 30)
@@ -2279,21 +2267,21 @@ def main():
         _s_our = f"{_pb_our['s_total_pct']:.1f}% #{_pb_rank(_pb_our_key, 's_total_pct')}"
         _s_vs = f"  /  {_pb_vs['s_total_pct']:.1f}% #{_pb_rank(_pb_vs_key, 's_total_pct')}" if _pb_vs else ""
         y = _pb_group_row(y, f"SIKERES  ({_s_our}{_s_vs})")
-        green_bg = (225, 245, 225)
-        y = _pb_data_row(y, "Közeli FG", 's_close_pct', 's_close_pg', True)
-        y = _pb_data_row(y, "Közép FG", 's_mid_pct', 's_mid_pg', True)
-        y = _pb_data_row(y, "Tripla FG", 's_three_pct', 's_three_pg', True)
-        y = _pb_data_row(y, "Büntető", 's_ft_pct', 's_ft_pg', True)
+        _green_bg = (225, 245, 225)
+        y = _pb_data_row(y, "Közeli FG", 's_close_pct', 's_close_pg', True, _green_bg)
+        y = _pb_data_row(y, "Közép FG", 's_mid_pct', 's_mid_pg', True, _green_bg)
+        y = _pb_data_row(y, "Tripla FG", 's_three_pct', 's_three_pg', True, _green_bg)
+        y = _pb_data_row(y, "Büntető", 's_ft_pct', 's_ft_pg', True, _green_bg)
 
         # SIKERTELEN group
         _f_our = f"{_pb_our['f_total_pct']:.1f}%"
         _f_vs = f"  /  {_pb_vs['f_total_pct']:.1f}%" if _pb_vs else ""
         y = _pb_group_row(y, f"SIKERTELEN  ({_f_our}{_f_vs})")
-        red_bg = (250, 230, 230)
-        y = _pb_data_row(y, "Közeli miss", 'f_close_pct', 'f_close_pg', False)
-        y = _pb_data_row(y, "Közép miss", 'f_mid_pct', 'f_mid_pg', False)
-        y = _pb_data_row(y, "Tripla miss", 'f_three_pct', 'f_three_pg', False)
-        y = _pb_data_row(y, "Eladás (TOV)", 'f_tov_pct', 'f_tov_pg', False)
+        _red_bg = (250, 230, 230)
+        y = _pb_data_row(y, "Közeli miss", 'f_close_pct', 'f_close_pg', False, _red_bg)
+        y = _pb_data_row(y, "Közép miss", 'f_mid_pct', 'f_mid_pg', False, _red_bg)
+        y = _pb_data_row(y, "Tripla miss", 'f_three_pct', 'f_three_pg', False, _red_bg)
+        y = _pb_data_row(y, "Eladás (TOV)", 'f_tov_pct', 'f_tov_pg', False, _red_bg)
 
         # FG% group
         y = _pb_group_row(y, "FG% ZÓNÁNKÉNT")
