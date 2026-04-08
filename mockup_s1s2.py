@@ -243,9 +243,13 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
     if _has_notes:
         _note_lines = len(scout_notes[0]) + len(scout_notes[1])
     card_h = 38 + max(0, _note_lines) * 3.5 if _has_notes else 38
-    if y_start + card_h > pdf.h - 20:
+    if y_start + card_h > pdf.h - 25:
         pdf.add_page()
         y_start = pdf.get_y()
+
+    # Disable auto page break within card to prevent splitting
+    _prev_auto_pb = pdf.auto_page_break
+    pdf.set_auto_page_break(auto=False)
 
     # Card background
     pdf.set_fill_color(248, 248, 250) if is_starter else pdf.set_fill_color(252, 252, 252)
@@ -844,8 +848,6 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
         # Top 3
         _draw_zone_label(basket_cx, zc_y + zc_h * 0.8, "top3", 5, 3.5)
 
-        pdf.set_auto_page_break(auto=True, margin=20)
-
         # FT below the court
         ft_d = player_zones.get("ft", {"made": 0, "total": 0})
         ft_m, ft_a = ft_d["made"], ft_d["total"]
@@ -859,6 +861,8 @@ def player_card(pdf, name, jersey, role, stats, note, is_starter=True, photo_pat
 
     pdf.set_y(y_start + card_h + 2)
 
+    # Restore auto page break
+    pdf.set_auto_page_break(auto=_prev_auto_pb, margin=20)
 
 def main():
     conn = sqlite3.connect(DB)
@@ -1531,12 +1535,35 @@ def main():
     if all_shots:
         import math
 
-        pdf.subsection("1.4 Season Shot Chart")
+        # Pre-compute totals for header
+        _sc_made = sum(1 for s in all_shots if s["is_made"])
+        _sc_att = len(all_shots)
+        _sc_pct = _sc_made / _sc_att * 100 if _sc_att else 0
+        # FT stats from PBP for header
+        _ft_made = _ft_att = 0
+        try:
+            _ft_c = sqlite3.connect(DB)
+            _ft_r = _ft_c.execute("""
+                SELECT SUM(CASE WHEN event_type='FT_MADE' THEN 1 ELSE 0 END),
+                       SUM(CASE WHEN event_type IN ('FT_MADE','FT_MISS') THEN 1 ELSE 0 END)
+                FROM pbp_events e JOIN matches m ON e.gamecode=m.gamecode
+                WHERE m.comp_code=? AND (
+                    (e.team='A' AND m.team_a_name LIKE ?) OR (e.team='B' AND m.team_b_name LIKE ?)
+                )
+            """, (COMP, TEAM, TEAM)).fetchone()
+            if _ft_r and _ft_r[1]:
+                _ft_made, _ft_att = _ft_r
+            _ft_c.close()
+        except:
+            pass
+        _ft_pct_h = round(_ft_made * 100.0 / _ft_att) if _ft_att > 0 else 0
+        _ft_str = f"  |  FT: {_ft_made}/{_ft_att} ({_ft_pct_h}%)" if _ft_att > 0 else ""
+        pdf.subsection(f"1.4 Season Shot Chart  —  {_sc_made}/{_sc_att} FG ({_sc_pct:.1f}%){_ft_str}")
 
         # Court dimensions — left side, leaving room for stats on right
         avail_w = pdf.w - pdf.l_margin - pdf.r_margin
         court_w = avail_w * 0.58   # ~58% for court
-        court_h = court_w * 0.62  # slightly compressed half-court
+        court_h = court_w * 0.62  # keep proper aspect ratio
         court_x = pdf.l_margin
         court_y = pdf.get_y() + 2
         stats_x = court_x + court_w + 6  # stats panel starts here
@@ -1991,8 +2018,10 @@ def main():
         pdf.set_xy(court_x, court_y + court_h + 2)
         pdf.set_font("Arial", "I", 6.5)
         pdf.set_text_color(120, 120, 120)
-        pdf.cell(0, 3, f"Left: shot locations. Right: zone FG% heatmap (green=efficient, red=weak). {total_made}/{total_att} FG ({total_pct:.1f}%). FT excluded.")
-        pdf.set_y(court_y + court_h + 6)
+        _legend_y = court_y + court_h + 2
+        pdf.set_xy(court_x, _legend_y)
+        pdf.cell(0, 3, "Left: shot locations. Right: zone FG% heatmap (green=efficient, red=weak).")
+        pdf.set_y(_legend_y + 4)
         pdf.set_auto_page_break(auto=True, margin=20)
     else:
         # No shot chart data (e.g. MEFOB)
@@ -2485,7 +2514,21 @@ def main():
             starter_gp[name] = gp
             starter_rate[name] = starts / gp if gp > 0 else 0
         pbp_conn.close()
-        print(f"  Starter freq (last 8): {{{', '.join(f'{n}: {s}/{starter_gp[n]}({starter_rate[n]:.0%})' for n, s in sorted(starter_freq.items(), key=lambda x: -x[1]) if s > 0)}}}")
+
+        # Enrich with MKOSZ scraped GP/GS for the full season
+        # Players missing from last 8 (injury) but significant starters season-wide
+        for mname, mstats in mkosz_player_stats.items():
+            mkosz_gp = mstats.get("gp", 0)
+            mkosz_gs = mstats.get("gs", 0)
+            if mkosz_gp >= 5 and mkosz_gs > 0:
+                mkosz_rate = mkosz_gs / mkosz_gp
+                if mname not in starter_rate or starter_gp.get(mname, 0) < 2:
+                    # Use MKOSZ season data as primary if player barely appeared in last 8
+                    starter_freq[mname] = mkosz_gs
+                    starter_gp[mname] = mkosz_gp
+                    starter_rate[mname] = mkosz_rate
+
+        print(f"  Starter freq: {{{', '.join(f'{n}: {s}/{starter_gp[n]}({starter_rate[n]:.0%})' for n, s in sorted(starter_freq.items(), key=lambda x: -starter_rate.get(x[0], 0)) if s > 0)}}}")
     except Exception as e:
         print(f"  Starter freq failed: {e}")
 
@@ -2794,18 +2837,17 @@ def main():
         pbp_conn2 = sqlite3.connect(DB)
         pbp_cur2 = pbp_conn2.cursor()
         pbp_cur2.execute("""
-            WITH vasas_matches AS (
+            WITH team_matches AS (
                 SELECT m.gamecode,
-                       CASE WHEN m.team_a_name=? THEN 'A' ELSE 'B' END as vasas_side,
-                       ROW_NUMBER() OVER (ORDER BY m.match_date DESC) as rn
+                       CASE WHEN m.team_a_name=? THEN 'A' ELSE 'B' END as team_side
                 FROM matches m
                 WHERE m.comp_code=?
                   AND (m.team_a_name=? OR m.team_b_name=?)
-            ),
-            last8 AS (SELECT * FROM vasas_matches WHERE rn <= 8)
+                  AND m.score_a > 0
+            )
             SELECT s.player_out_name, s.player_in_name, COUNT(*) as times
             FROM substitutions s
-            JOIN last8 vm ON s.gamecode = vm.gamecode AND s.team = vm.vasas_side
+            JOIN team_matches vm ON s.gamecode = vm.gamecode AND s.team = vm.team_side
             GROUP BY s.player_out_name, s.player_in_name
             ORDER BY times DESC
         """, (team_exact, COMP, team_exact, team_exact))
@@ -2825,7 +2867,7 @@ def main():
         pairs = sub_pairs.get(starter_name, [])
         backups = []
         for bench_name, cnt in sorted(pairs, key=lambda x: -x[1]):
-            if bench_name not in starter_names and cnt >= 3:
+            if bench_name not in starter_names and cnt >= 1:
                 r = roster_map.get(bench_name, {})
                 backups.append((bench_name, r.get("jersey", "?"), r.get("height", "?"), cnt))
             if len(backups) >= 2:  # top 2 backups
@@ -4008,9 +4050,11 @@ def main():
         # Find H2H matches from mkosz_stats DB (case-insensitive)
         _h2h_tq = _tq  # already lowercased + normalized from earlier
         _h2h_vq = vs_strip.replace("-", " ").lower()
+        def _h2h_norm(s):
+            return (s or "").lower().replace("-", " ")
         h2h_matches = [m for m in all_matches
-                        if (_h2h_tq in (m["team_a_name"] or "").lower() and _h2h_vq in (m["team_b_name"] or "").lower())
-                        or (_h2h_vq in (m["team_a_name"] or "").lower() and _h2h_tq in (m["team_b_name"] or "").lower())]
+                        if (_h2h_tq in _h2h_norm(m["team_a_name"]) and _h2h_vq in _h2h_norm(m["team_b_name"]))
+                        or (_h2h_vq in _h2h_norm(m["team_a_name"]) and _h2h_tq in _h2h_norm(m["team_b_name"]))]
         h2h_matches.sort(key=lambda m: m.get("match_date") or "")
 
         if h2h_matches:
