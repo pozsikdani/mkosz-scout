@@ -2031,7 +2031,288 @@ def main():
         pdf.cell(0, 12, "No shot chart data available for this competition.", align="C")
         pdf.ln(14)
 
-    # ── §1.5 LEAGUE COMPARISON ─────────────────────────────────
+    # ── §1.5 POSSESSION BREAKDOWN ────────────────────────────────
+    # Event-by-event possession outcome tracking + standard Pace normalization
+    def _compute_poss_breakdown(team_variants, comp_code):
+        """Count possession outcomes via event-by-event tracking."""
+        _pb_conn = sqlite3.connect(DB)
+        ft_types = {'FT_MADE', 'FT_MISS'}
+        t = {'close_m': 0, 'mid_m': 0, 'three_m': 0, 'dunk_m': 0,
+             'close_x': 0, 'mid_x': 0, 'three_x': 0, 'dunk_x': 0,
+             'ft': 0, 'tov': 0, 'games': 0,
+             'fga': 0, 'fta': 0, 'oreb_total': 0, 'tov_total': 0}
+        for vname in team_variants:
+            games = _pb_conn.execute(
+                "SELECT gamecode, team_a_name FROM matches WHERE comp_code=? AND score_a > 0 AND (team_a_name=? OR team_b_name=?)",
+                (comp_code, vname, vname)).fetchall()
+            for gcode, ta in games:
+                vs = 'A' if ta == vname else 'B'
+                events = [e[0] for e in _pb_conn.execute(
+                    "SELECT event_type FROM pbp_events WHERE gamecode=? AND team=? ORDER BY event_seq",
+                    (gcode, vs)).fetchall()]
+                # Standard pace components
+                for ev in events:
+                    if ev in {'CLOSE_MADE','MID_MADE','DUNK_MADE','THREE_MADE','CLOSE_MISS','MID_MISS','DUNK_MISS','THREE_MISS'}:
+                        t['fga'] += 1
+                    elif ev in ft_types:
+                        t['fta'] += 1
+                    elif ev == 'OREB':
+                        t['oreb_total'] += 1
+                    elif ev == 'TOV':
+                        t['tov_total'] += 1
+                # Event counting
+                i = 0
+                while i < len(events):
+                    et = events[i]
+                    if et == 'CLOSE_MADE': t['close_m'] += 1
+                    elif et == 'MID_MADE': t['mid_m'] += 1
+                    elif et == 'THREE_MADE': t['three_m'] += 1
+                    elif et == 'DUNK_MADE': t['dunk_m'] += 1
+                    elif et == 'TOV': t['tov'] += 1
+                    elif et in {'CLOSE_MISS', 'MID_MISS', 'THREE_MISS', 'DUNK_MISS'}:
+                        if i + 1 < len(events) and events[i+1] == 'OREB':
+                            pass
+                        else:
+                            if et == 'CLOSE_MISS': t['close_x'] += 1
+                            elif et == 'MID_MISS': t['mid_x'] += 1
+                            elif et == 'THREE_MISS': t['three_x'] += 1
+                            elif et == 'DUNK_MISS': t['dunk_x'] += 1
+                    elif et in ft_types:
+                        while i < len(events) and events[i] in ft_types:
+                            i += 1
+                        i -= 1
+                        if not (i + 1 < len(events) and events[i+1] == 'OREB'):
+                            t['ft'] += 1
+                    i += 1
+                t['games'] += 1
+        _pb_conn.close()
+        if t['games'] == 0:
+            return None
+        g = t['games']
+        # Standard pace
+        pace = (t['fga'] + 0.44 * t['fta'] + t['tov_total'] - t['oreb_total']) / g
+        # Event totals and normalization
+        s_close = t['close_m'] + t['dunk_m']
+        f_close = t['close_x'] + t['dunk_x']
+        ev_total = s_close + t['mid_m'] + t['three_m'] + t['ft'] + f_close + t['mid_x'] + t['three_x'] + t['tov']
+        scale = pace * g / ev_total if ev_total else 1
+        att_c = s_close + f_close
+        att_m = t['mid_m'] + t['mid_x']
+        att_t = t['three_m'] + t['three_x']
+        return {
+            'pace': round(pace, 1), 'games': g,
+            's_close_pct': s_close * 100 / ev_total, 's_mid_pct': t['mid_m'] * 100 / ev_total,
+            's_three_pct': t['three_m'] * 100 / ev_total, 's_ft_pct': t['ft'] * 100 / ev_total,
+            's_total_pct': (s_close + t['mid_m'] + t['three_m'] + t['ft']) * 100 / ev_total,
+            'f_close_pct': f_close * 100 / ev_total, 'f_mid_pct': t['mid_x'] * 100 / ev_total,
+            'f_three_pct': t['three_x'] * 100 / ev_total, 'f_tov_pct': t['tov'] * 100 / ev_total,
+            'f_total_pct': (f_close + t['mid_x'] + t['three_x'] + t['tov']) * 100 / ev_total,
+            'fg_close': s_close * 100 / att_c if att_c else 0,
+            'fg_mid': t['mid_m'] * 100 / att_m if att_m else 0,
+            'fg_three': t['three_m'] * 100 / att_t if att_t else 0,
+            # /g normalized to pace
+            's_close_pg': s_close * scale / g, 's_mid_pg': t['mid_m'] * scale / g,
+            's_three_pg': t['three_m'] * scale / g, 's_ft_pg': t['ft'] * scale / g,
+            'f_close_pg': f_close * scale / g, 'f_mid_pg': t['mid_x'] * scale / g,
+            'f_three_pg': t['three_x'] * scale / g, 'f_tov_pg': t['tov'] * scale / g,
+        }
+
+    # Compute for all teams in the league (deduplicated)
+    _pb_all_teams = {}
+    try:
+        _pb_lc = sqlite3.connect(DB)
+        _pb_names = [r[0] for r in _pb_lc.execute(
+            "SELECT DISTINCT team_a_name FROM matches WHERE comp_code=? AND score_a>0 UNION "
+            "SELECT DISTINCT team_b_name FROM matches WHERE comp_code=? AND score_a>0", (COMP, COMP)).fetchall()]
+        _pb_lc.close()
+        # Group by merge key
+        _pb_groups = {}
+        for tn in _pb_names:
+            if not tn:
+                continue
+            key = tn.lower().replace("õ", "ő").replace("?", "ő").replace("-", " ")
+            if "salgó" in key or "salg" in key:
+                key = "salgotarjan"
+            elif key.startswith("bkg prima"):
+                key = "bkg prima"
+            else:
+                key = key[:12]
+            if key not in _pb_groups:
+                _pb_groups[key] = []
+            _pb_groups[key].append(tn)
+        # Compute breakdown for each group
+        for key, variants in _pb_groups.items():
+            bd = _compute_poss_breakdown(variants, COMP)
+            if bd and bd['games'] >= 5:
+                _pb_all_teams[key] = bd
+                _pb_all_teams[key]['display_name'] = variants[0]
+    except Exception as e:
+        print(f"  Possession breakdown error: {e}")
+
+    def _pb_rank(team_key, stat, higher_is_better=True):
+        if team_key not in _pb_all_teams:
+            return "?"
+        val = _pb_all_teams[team_key][stat]
+        if higher_is_better:
+            return sum(1 for t in _pb_all_teams.values() if t[stat] > val) + 1
+        else:
+            return sum(1 for t in _pb_all_teams.values() if t[stat] < val) + 1
+
+    def _pb_find_key(team_name):
+        """Find merge key for a team name."""
+        k = team_name.lower().replace("õ", "ő").replace("?", "ő").replace("-", " ")
+        if "salgó" in k or "salg" in k: return "salgotarjan"
+        if k.startswith("bkg prima"): return "bkg prima"
+        return k[:12]
+
+    # Render section
+    _pb_our_key = _pb_find_key(our_name) if our_name else None
+    _pb_vs_key = _pb_find_key(VS_TEAM.strip("%")) if VS_TEAM else None
+    _pb_our = _pb_all_teams.get(_pb_our_key)
+    _pb_vs = _pb_all_teams.get(_pb_vs_key) if VS_TEAM else None
+    n_teams = len(_pb_all_teams)
+
+    if _pb_our:
+        pdf.add_page()
+        pdf.subsection("1.5 Possession Breakdown")
+        pdf.ln(2)
+
+        # Table layout
+        avail_w = pdf.w - pdf.l_margin - pdf.r_margin
+        label_w = 32
+        if _pb_vs:
+            val_w = (avail_w - label_w) / 2
+        else:
+            val_w = avail_w - label_w
+        x0 = pdf.l_margin
+        row_h = 5.5
+
+        def _pb_header_row(y):
+            """Draw column headers."""
+            pdf.set_fill_color(40, 40, 40)
+            pdf.set_text_color(255, 255, 255)
+            pdf.set_font("Arial", "B", 7)
+            pdf.rect(x0, y, label_w, row_h, "F")
+            pdf.rect(x0 + label_w, y, val_w, row_h, "F")
+            pdf.set_xy(x0 + label_w + 1, y + 1)
+            _our_hdr = f"{our_name[:20]}  ({_pb_our['pace']} pace, #{_pb_rank(_pb_our_key, 'pace')})"
+            pdf.cell(val_w - 2, row_h - 2, _our_hdr, align="C")
+            if _pb_vs:
+                pdf.rect(x0 + label_w + val_w, y, val_w, row_h, "F")
+                pdf.set_xy(x0 + label_w + val_w + 1, y + 1)
+                _vs_name = VS_TEAM.strip("%")
+                _vs_hdr = f"{_vs_name[:20]}  ({_pb_vs['pace']} pace, #{_pb_rank(_pb_vs_key, 'pace')})"
+                pdf.cell(val_w - 2, row_h - 2, _vs_hdr, align="C")
+            return y + row_h
+
+        def _pb_group_row(y, label):
+            """Draw a group separator row."""
+            pdf.set_fill_color(60, 60, 65)
+            pdf.set_text_color(255, 255, 255)
+            pdf.set_font("Arial", "B", 6.5)
+            pdf.rect(x0, y, avail_w, row_h - 1, "F")
+            pdf.set_xy(x0 + 2, y + 0.5)
+            pdf.cell(avail_w - 4, row_h - 2, label)
+            return y + row_h - 1
+
+        def _pb_data_row(y, label, stat_pct, stat_pg, stat_rank_hib, bg_color=None):
+            """Draw a data row with values for our team (and vs if present).
+            Cells colored green/red relative to each other when --vs is used."""
+            our_val = _pb_our[stat_pct]
+            our_pg = _pb_our[stat_pg] if stat_pg else None
+            our_rk = _pb_rank(_pb_our_key, stat_pct, stat_rank_hib)
+
+            vs_val = _pb_vs[stat_pct] if _pb_vs else None
+            vs_pg = _pb_vs[stat_pg] if _pb_vs and stat_pg else None
+            vs_rk = _pb_rank(_pb_vs_key, stat_pct, stat_rank_hib) if _pb_vs else None
+
+            # Determine who is better for coloring
+            green_bg = (215, 240, 215)
+            red_bg = (245, 220, 220)
+            neutral_bg = (248, 248, 250)
+
+            if _pb_vs and abs(our_val - vs_val) > 0.3:
+                our_is_better = (our_val > vs_val) == stat_rank_hib
+                our_bg = green_bg if our_is_better else red_bg
+                vs_bg = red_bg if our_is_better else green_bg
+            else:
+                our_bg = neutral_bg
+                vs_bg = neutral_bg
+
+            # Label column
+            pdf.set_fill_color(*neutral_bg)
+            pdf.rect(x0, y, label_w, row_h, "F")
+            pdf.set_font("Arial", "", 6)
+            pdf.set_text_color(80, 80, 80)
+            pdf.set_xy(x0 + 2, y + 1)
+            pdf.cell(label_w - 4, row_h - 2, label)
+
+            # Our value cell
+            pdf.set_fill_color(*our_bg)
+            pdf.rect(x0 + label_w, y, val_w, row_h, "F")
+            pdf.set_font("Arial", "B", 6.5)
+            pdf.set_text_color(30, 30, 30)
+            pdf.set_xy(x0 + label_w + 1, y + 1)
+            if our_pg is not None:
+                pdf.cell(val_w - 2, row_h - 2, f"{our_pg:.1f}/g  —  {our_val:.1f}%  (#{our_rk})", align="C")
+            else:
+                pdf.cell(val_w - 2, row_h - 2, f"{our_val:.0f}%  (#{our_rk})", align="C")
+
+            # VS value cell
+            if _pb_vs:
+                pdf.set_fill_color(*vs_bg)
+                pdf.rect(x0 + label_w + val_w, y, val_w, row_h, "F")
+                pdf.set_font("Arial", "B", 6.5)
+                pdf.set_text_color(30, 30, 30)
+                pdf.set_xy(x0 + label_w + val_w + 1, y + 1)
+                if vs_pg is not None:
+                    pdf.cell(val_w - 2, row_h - 2, f"{vs_pg:.1f}/g  —  {vs_val:.1f}%  (#{vs_rk})", align="C")
+                else:
+                    pdf.cell(val_w - 2, row_h - 2, f"{vs_val:.0f}%  (#{vs_rk})", align="C")
+
+            return y + row_h
+
+        y = pdf.get_y()
+        y = _pb_header_row(y)
+
+        # SIKERES group
+        _s_our = f"{_pb_our['s_total_pct']:.1f}% #{_pb_rank(_pb_our_key, 's_total_pct')}"
+        _s_vs = f"  /  {_pb_vs['s_total_pct']:.1f}% #{_pb_rank(_pb_vs_key, 's_total_pct')}" if _pb_vs else ""
+        y = _pb_group_row(y, f"SIKERES  ({_s_our}{_s_vs})")
+        green_bg = (225, 245, 225)
+        y = _pb_data_row(y, "Közeli FG", 's_close_pct', 's_close_pg', True)
+        y = _pb_data_row(y, "Közép FG", 's_mid_pct', 's_mid_pg', True)
+        y = _pb_data_row(y, "Tripla FG", 's_three_pct', 's_three_pg', True)
+        y = _pb_data_row(y, "Büntető", 's_ft_pct', 's_ft_pg', True)
+
+        # SIKERTELEN group
+        _f_our = f"{_pb_our['f_total_pct']:.1f}%"
+        _f_vs = f"  /  {_pb_vs['f_total_pct']:.1f}%" if _pb_vs else ""
+        y = _pb_group_row(y, f"SIKERTELEN  ({_f_our}{_f_vs})")
+        red_bg = (250, 230, 230)
+        y = _pb_data_row(y, "Közeli miss", 'f_close_pct', 'f_close_pg', False)
+        y = _pb_data_row(y, "Közép miss", 'f_mid_pct', 'f_mid_pg', False)
+        y = _pb_data_row(y, "Tripla miss", 'f_three_pct', 'f_three_pg', False)
+        y = _pb_data_row(y, "Eladás (TOV)", 'f_tov_pct', 'f_tov_pg', False)
+
+        # FG% group
+        y = _pb_group_row(y, "FG% ZÓNÁNKÉNT")
+        y = _pb_data_row(y, "Közeli FG%", 'fg_close', None, True)
+        y = _pb_data_row(y, "Közép FG%", 'fg_mid', None, True)
+        y = _pb_data_row(y, "Tripla FG%", 'fg_three', None, True)
+
+        pdf.set_y(y + 3)
+        pdf.set_font("Arial", "I", 6)
+        pdf.set_text_color(140, 140, 140)
+        pdf.cell(0, 3, f"Possession = event-by-event tracking. /g normalized to standard Pace (FGA + 0.44*FTA + TOV - OREB). Rankings out of {n_teams} teams.")
+    else:
+        pdf.subsection("1.5 Possession Breakdown")
+        pdf.set_font("Arial", "I", 9)
+        pdf.set_text_color(140, 140, 140)
+        pdf.cell(0, 12, "No possession data available for this competition.", align="C")
+        pdf.ln(14)
+
+    # ── §1.6 LEAGUE COMPARISON ─────────────────────────────────────
     # Aggregate team-level stats from PBP events for all teams in the competition
     try:
         lc_conn = sqlite3.connect(DB)
@@ -2138,7 +2419,7 @@ def main():
 
         if len(lc_teams) >= 5:
             pdf.add_page()
-            pdf.subsection("1.5 League Comparison")
+            pdf.subsection("1.6 League Comparison")
 
             # Short name for display (max ~18 chars)
             def _lc_short(tn):
