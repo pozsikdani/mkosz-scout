@@ -2400,13 +2400,14 @@ def main():
             lt["tp_pct"] = round(lt["tpm"] * 100 / lt["tpa"], 1) if lt["tpa"] else 0
             lt["ft_pct"] = round(lt["ftm"] * 100 / lt["fta"], 1) if lt["fta"] else 0
             lt["rpg"] = round(lt["reb"] / gp, 1)
+            lt["oreb_pg"] = round(lt["oreb"] / gp, 1)
+            lt["dreb_pg"] = round((lt["reb"] - lt["oreb"]) / gp, 1) if lt["reb"] >= lt["oreb"] else 0
             lt["apg"] = round(lt["ast"] / gp, 1)
             lt["topg"] = round(lt["tov"] / gp, 1)
             lt["spg"] = round(lt["stl"] / gp, 1)
             lt["bpg"] = round(lt["blk"] / gp, 1)
 
         if len(lc_teams) >= 5:
-            pdf.add_page()
             pdf.subsection("1.6 League Comparison")
 
             # Short name for display (max ~18 chars)
@@ -2492,6 +2493,8 @@ def main():
                 ("3PT%", "tp_pct", lambda t: f"{t['tp_pct']:.1f}%", False),
                 ("FT%", "ft_pct", lambda t: f"{t['ft_pct']:.1f}%", False),
                 ("Rebounds / Game", "rpg", lambda t: f"{t['rpg']:.1f}", False),
+                ("Off. Rebounds / Game", "oreb_pg", lambda t: f"{t['oreb_pg']:.1f}", False),
+                ("Def. Rebounds / Game", "dreb_pg", lambda t: f"{t['dreb_pg']:.1f}", False),
                 ("Assists / Game", "apg", lambda t: f"{t['apg']:.1f}", False),
                 ("Turnovers / Game", "topg", lambda t: f"{t['topg']:.1f}", True),
                 ("Steals / Game", "spg", lambda t: f"{t['spg']:.1f}", False),
@@ -2499,26 +2502,35 @@ def main():
 
             pdf.set_auto_page_break(auto=False)
 
-            y_start = pdf.get_y() + 2
-            gap_between = 3  # vertical gap between tables
+            # Split categories into pages of 6 (3 per column per page)
+            page_size = 6  # 3 left + 3 right per page
+            for page_start in range(0, len(categories), page_size):
+                page_cats = categories[page_start:page_start + page_size]
+                half = (len(page_cats) + 1) // 2
 
-            # Left column (first 5)
-            cy = y_start
-            for i in range(5):
-                title, key, fmt, asc = categories[i]
-                h = _draw_league_table(col1_x, cy, title, key, fmt, ascending=asc, col_w=col_w)
-                cy += h + gap_between
+                if page_start > 0:
+                    pdf.add_page()
+                y_start = pdf.get_y() + 2
+                gap_between = 3
 
-            # Right column (next 5)
-            cy = y_start
-            for i in range(5, 10):
-                title, key, fmt, asc = categories[i]
-                h = _draw_league_table(col2_x, cy, title, key, fmt, ascending=asc, col_w=col_w)
-                cy += h + gap_between
+                # Left column
+                cy = y_start
+                for i in range(half):
+                    title, key, fmt, asc = page_cats[i]
+                    h = _draw_league_table(col1_x, cy, title, key, fmt, ascending=asc, col_w=col_w)
+                    cy += h + gap_between
+
+                # Right column
+                cy_r = y_start
+                for i in range(half, len(page_cats)):
+                    title, key, fmt, asc = page_cats[i]
+                    h = _draw_league_table(col2_x, cy_r, title, key, fmt, ascending=asc, col_w=col_w)
+                    cy_r += h + gap_between
+
+                pdf.set_y(max(cy, cy_r, y_start + 5))
 
             pdf.set_auto_page_break(auto=True, margin=20)
-            pdf.set_y(max(cy, y_start + 5))
-            print(f"  League comparison: {len(lc_teams)} teams across 10 categories")
+            print(f"  League comparison: {len(lc_teams)} teams across {len(categories)} categories")
 
     except Exception as e:
         print(f"  Warning: League comparison skipped ({e})")
