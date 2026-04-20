@@ -133,6 +133,24 @@ TEAM = "%Vasas%"
 COMP = "hun2a"
 SEASON = "x2526"
 
+# Competition display names (shown on cover page)
+COMP_DISPLAY_NAMES = {
+    "hun2a": "NB1 B Piros",
+    "hun2b": "NB1 B Zöld",
+    "hun2a_plya": "NB1 B Piros — Rájátszás",
+    "hun3k": "NB2 Kelet",
+    "hun3ki": "NB2 Kiemelt",
+    "hun3n": "NB2 Nyugat",
+    "hun3koa": "NB2 Közép A",
+    "hun3kob": "NB2 Közép B",
+    "hun3_plya": "NB2 — Rájátszás",
+    "hun_univn": "MEFOB Férfi Nyugat",
+    "hun_univk": "MEFOB Férfi Kelet",
+    "hun_univ_ply": "MEFOB Férfi — Rájátszás",
+    "whun_univn": "MEFOB Női Nyugat",
+    "whun_univk": "MEFOB Női Kelet",
+}
+
 
 class ScoutPDF(FPDF):
     def __init__(self, team_name):
@@ -1127,7 +1145,13 @@ def main():
     pdf.ln(16)
     pdf.set_font("Arial", "", 12)
     pdf.set_text_color(100, 100, 100)
-    pdf.cell(0, 8, f"NB1 B Piros  |  2025/2026 Season", align="C")
+    _comp_display = COMP_DISPLAY_NAMES.get(COMP, COMP)
+    # Parse SEASON code (e.g. "x2526" -> "2025/2026")
+    def _season_display(s):
+        if s and s.startswith("x") and len(s) == 5 and s[1:].isdigit():
+            return f"20{s[1:3]}/20{s[3:5]}"
+        return s
+    pdf.cell(0, 8, f"{_comp_display}  |  {_season_display(SEASON)} Season", align="C")
     pdf.ln(10)
     _data_through = matches[-1]['match_date'] if matches else (mkosz_results[-1]["date"] if mkosz_results else "N/A")
     pdf.cell(0, 8, f"Based on {len(matches) or len(mkosz_results)} games  |  Data through {_data_through}", align="C")
@@ -2796,6 +2820,37 @@ def main():
             starter_rate[name] = starts / gp if gp > 0 else 0
         pbp_conn.close()
 
+        # NB2 fallback: if no PBP substitutions data (NB2 competitions), use scoresheet is_starter
+        if not starter_freq and COMP.startswith("hun3"):
+            ss_conn = sqlite3.connect(DB)
+            ss_cur = ss_conn.cursor()
+            # Get our team's player stats from last 8 matches: join on team side (A/B)
+            ss_cur.execute("""
+                WITH last8 AS (
+                    SELECT gamecode,
+                           CASE WHEN team_a_name=? THEN 'A' ELSE 'B' END as our_side
+                    FROM matches
+                    WHERE comp_code=? AND score_a > 0
+                      AND (team_a_name=? OR team_b_name=?)
+                    ORDER BY match_date DESC LIMIT 8
+                )
+                SELECT pgs.player_name,
+                       COUNT(DISTINCT pgs.gamecode) as gp,
+                       SUM(CASE WHEN pgs.is_starter=1 THEN 1 ELSE 0 END) as starts
+                FROM player_game_stats pgs
+                JOIN last8 l ON pgs.gamecode = l.gamecode AND pgs.team = l.our_side
+                GROUP BY pgs.player_name
+            """, (team_exact, COMP, team_exact, team_exact))
+            for row in ss_cur.fetchall():
+                name, gp, starts = row[0], row[1], row[2]
+                if starts > 0:
+                    starter_freq[name] = starts
+                    starter_gp[name] = gp
+                    starter_rate[name] = starts / gp if gp > 0 else 0
+            ss_conn.close()
+            if starter_freq:
+                print(f"  NB2 fallback: {len(starter_freq)} players from scoresheet is_starter")
+
         # Enrich with MKOSZ scraped GP/GS for the full season
         # Players missing from last 8 (injury) but significant starters season-wide
         for mname, mstats in mkosz_player_stats.items():
@@ -2822,6 +2877,20 @@ def main():
             if p in ("3-4",): return "wing_big"
             if p in ("2-3",): return "wing"
             if p in ("1-2", "1"): return "guard"
+            # Extended mapping for NB2 only — MKOSZ uses singleton codes like "5", "4"
+            if COMP.startswith("hun3"):
+                if p in ("5", "4-5"): return "big"
+                if p in ("4", "3-4"): return "wing_big"
+                if p in ("3", "2-3"): return "wing"
+                if p in ("1", "2", "1-2"): return "guard"
+                # Fallback: highest digit in code
+                digits = [int(d) for d in p if d.isdigit()]
+                if digits:
+                    max_d = max(digits)
+                    if max_d == 5: return "big"
+                    if max_d == 4: return "wing_big"
+                    if max_d == 3: return "wing"
+                    if max_d <= 2: return "guard"
         return "unknown"
 
     def can_play_wing(name):
