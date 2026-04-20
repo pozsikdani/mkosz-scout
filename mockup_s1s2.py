@@ -2813,11 +2813,29 @@ def main():
             GROUP BY p.player
             ORDER BY starts DESC
         """, (team_exact, COMP, team_exact, team_exact))
-        for row in pbp_cur.fetchall():
+        # Aggregate case-insensitively (PBP scraper inconsistently uses upper/title case)
+        # Prefer the case variant with more starter records; merge GP/starts
+        _raw_rows = pbp_cur.fetchall()
+        _agg = {}  # lower_name -> {"canonical": str, "gp": int, "starts": int, "pref_starts": int}
+        for row in _raw_rows:
             name, gp, starts = row[0], row[1], row[2]
-            starter_freq[name] = starts
-            starter_gp[name] = gp
-            starter_rate[name] = starts / gp if gp > 0 else 0
+            if not name:
+                continue
+            key = name.lower()
+            if key not in _agg:
+                _agg[key] = {"canonical": name, "gp": gp, "starts": starts, "pref_starts": starts}
+            else:
+                _agg[key]["gp"] += gp
+                _agg[key]["starts"] += starts
+                # Keep canonical as the variant with more starts (more data = preferred display form)
+                if starts > _agg[key]["pref_starts"]:
+                    _agg[key]["canonical"] = name
+                    _agg[key]["pref_starts"] = starts
+        for d in _agg.values():
+            n = d["canonical"]
+            starter_freq[n] = d["starts"]
+            starter_gp[n] = d["gp"]
+            starter_rate[n] = d["starts"] / d["gp"] if d["gp"] > 0 else 0
         pbp_conn.close()
 
         # NB2 fallback: if no PBP substitutions data (NB2 competitions), use scoresheet is_starter
@@ -2853,16 +2871,27 @@ def main():
 
         # Enrich with MKOSZ scraped GP/GS for the full season
         # Players missing from last 8 (injury) but significant starters season-wide
+        # Build case-insensitive lookup to avoid duplicate keys (e.g. "Fekete V." vs "FEKETE V.")
+        _sf_lower = {n.lower(): n for n in starter_rate.keys()}
         for mname, mstats in mkosz_player_stats.items():
             mkosz_gp = mstats.get("gp", 0)
             mkosz_gs = mstats.get("gs", 0)
             if mkosz_gp >= 5 and mkosz_gs > 0:
                 mkosz_rate = mkosz_gs / mkosz_gp
-                if mname not in starter_rate or starter_gp.get(mname, 0) < 2:
-                    # Use MKOSZ season data as primary if player barely appeared in last 8
+                # Find existing entry case-insensitively
+                existing_key = _sf_lower.get(mname.lower())
+                if existing_key is None:
+                    # No existing entry — add new with MKOSZ name
                     starter_freq[mname] = mkosz_gs
                     starter_gp[mname] = mkosz_gp
                     starter_rate[mname] = mkosz_rate
+                    _sf_lower[mname.lower()] = mname
+                elif starter_gp.get(existing_key, 0) < 2:
+                    # Existing entry has too little data — override with MKOSZ season data
+                    # (keep the existing key to preserve case consistency)
+                    starter_freq[existing_key] = mkosz_gs
+                    starter_gp[existing_key] = mkosz_gp
+                    starter_rate[existing_key] = mkosz_rate
 
         print(f"  Starter freq: {{{', '.join(f'{n}: {s}/{starter_gp[n]}({starter_rate[n]:.0%})' for n, s in sorted(starter_freq.items(), key=lambda x: -starter_rate.get(x[0], 0)) if s > 0)}}}")
     except Exception as e:
