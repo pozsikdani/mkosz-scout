@@ -5,108 +5,122 @@
 - GitHub: `pozsikdani/mkosz-scout`
 
 ## Dependencies
-- **mkosz-stats DB**: `/Users/danipozsik/Desktop/claudecode/mkosz-stats/mkosz_stats.sqlite` — **unified database** containing shots (shotchart API), PBP events & substitutions, and matches. Single DB for all data.
-- **MKOSZ website**: `mkosz.hu` — live standings (authoritative W-L record), match results (authoritative scores), roster scraping (player photos, height, position)
+- **mkosz-stats DB**: `../mkosz-stats/mkosz_stats.sqlite` — unified DB: shots, PBP events, substitutions, matches, player_game_stats (scoresheet-alapú)
+- **mkosz.hu website**: live standings, match results, roster, player stats pages — authoritative sources
 
 ## Key File
-- `mockup_s1s2.py` — **The main scout report generator** (~4200 lines). Generates a full PDF scout report for any NB1B team, with optional head-to-head analysis.
+- `mockup_s1s2.py` (~4900 sor) — **The main multi-competition scout report generator**
 
 ## Usage
 ```bash
-python3 mockup_s1s2.py Vasas              # Generate Vasas report (Section 1+2)
-python3 mockup_s1s2.py "TF-BP"            # Any team name substring works
-python3 mockup_s1s2.py Vasas --vs TF-BP   # H2H report: Vasas scouted, TF-BP opponent (Section 1+2+3)
+python3 mockup_s1s2.py Vasas                              # NB1B default (hun2a)
+python3 mockup_s1s2.py Vasas --vs TF-BP                   # + H2H Section 3
+python3 mockup_s1s2.py "TFSE" --comp hun_univn --vs "Közgáz"  # MEFOB Férfi
+python3 mockup_s1s2.py "BKG DSE" --comp hun3koa           # NB2 (részleges)
 ```
-Output: `scout_{team-slug}.pdf` or `scout_{slug}_vs_{vs-slug}.pdf`
+Output: `scout_{team-slug}.pdf` vagy `scout_{slug}_vs_{vs-slug}.pdf`
 
-## Report Structure (3 Sections, ~7-10 pages)
+## Supported Competitions
 
-### Section 1: Team Overview & Season Context
-- **1.1 Standings** — Full league table (scraped live from mkosz.hu, scouted team highlighted in neutral gray) + summary card (ALL/HOME/AWAY splits: Record with green W / red L coloring, PPG, OPPG, Margin). Gray separator bar (not red).
-- **1.2 Season Margin Trend** — Bar chart (green W / red L), H/A labels, upset markers (*), 5-game rolling avg line. **Match results scraped from mkosz.hu** (authoritative).
-- **1.3 Last 5 Games** — Table with Date, H/@, Opponent, Score, W/L, +/-, UPS (upset marker). **From mkosz.hu scrape.**
-- **1.4 Season Shot Chart** — Dual view: dot chart (left) + zone heatmap (right, 9 zones: paint, left/right mid, left/right corner 3, left/right wing 3, top 3), green/red coloring by efficiency
-- **1.5 League Comparison** — 10 mini-tables (2×5 grid) ranking all 14 teams: Net Rating, PPG, OPPG, Pace, 3PT%, FT%, RPG, APG, TOV/G, STL/G. Scouted team highlighted in red. PPG/OPPG from standings Dob/Kap; other stats from pbp_events aggregation.
+| Comp code | Display név (`COMP_DISPLAY_NAMES`) | Shot chart | PBP | Projected 5 forrás |
+|---|---|:-:|:-:|---|
+| `hun2a` | NB1 B Piros | ✅ | ✅ | sub-tracking |
+| `hun2b` | NB1 B Zöld | ✅ | ✅ | sub-tracking |
+| `hun2a_plya` | NB1 B Piros — Rájátszás | ✅ | ✅ | sub-tracking |
+| `hun_univn` | MEFOB Férfi Nyugat | ❌ | ✅ | sub-tracking |
+| `hun_univk` | MEFOB Férfi Kelet | ❌ | ✅ | sub-tracking |
+| `hun_univ_ply` | MEFOB Férfi — Rájátszás | ❌ | ✅ | sub-tracking |
+| `hun3k` / `hun3ki` / `hun3n` / `hun3koa` / `hun3kob` | NB2 Kelet/Kiemelt/Nyugat/Közép A/B | ❌ | ❌ | **scoresheet is_starter** |
+
+## Report Structure (3 Sections)
+
+### Cover Page — mind dinamikus
+- `our_name`, `COMP_DISPLAY_NAMES[COMP]`, SEASON parser (x2526 → 2025/2026)
+- "Based on N games | Data through YYYY-MM-DD"
+- W-L record: **zöld W, szürke kötőjel, piros L** (36pt)
+- Place | W/L streak (zöld/piros) | PPG (zöld) / OPPG (piros)
+
+### Section 1: Team Overview
+- **1.1 Standings** — scraped from `mkosz.hu/bajnoksag/{SEASON}/{COMP}`; scouted team neutral gray highlight; summary card: Record (zöld-piros), PPG, OPPG, Margin × ALL/HOME/AWAY
+- **1.2 Season Margin Trend** — bar chart; meccs eredmények scraped from `bajnoksag-musor/{SEASON}/{COMP}/phase/0/csapat/{team_id}`
+- **1.3 Last 5 Games** — ugyanonnan, UPS (upset) jelöléssel
+- **1.4 Season Shot Chart** — dot + 9-zónás heatmap; FG és FT összesítő a címsorban (`"1.4 Season Shot Chart — 657/1511 FG (43.5%) | FT: 312/440 (71%)"`)
+- **1.5 Possession Breakdown** — event-by-event possession outcome: SIKERES (close/mid/tripla/büntető) és SIKERTELEN (miss variations + TOV). /g normalizálva standard Pace-re, league ranking (#/14). `--vs` esetén 2-column összehasonlítás
+- **1.6 League Comparison** — 12 mini-tabella (2×3 per page, 2 oldal): Net Rating, PPG, OPPG, Pace, 3PT%, FT%, RPG, OREB/g, DREB/g, APG, TOV/g, STL/g
 
 ### Section 2: Rotation & Personnel
-- **2.1 Projected Starting Five** — Half-court formation diagram with circular player photos (from MKOSZ), jersey badge, height, position, PPG, starter frequency. Backup players shown below with gray borders + SUB label + dashed lines connecting to their starter.
-- **2.1b Rotation Patterns** — Table: Pos, Starter(MPG), Primary Sub(MPG), Secondary(MPG), Rotation Pattern description
-- **2.1c Lineup Net Rating** — Top lineups by minutes played (last 8 games), with NET and NRTG/40. Starting five marked with [S5].
-- **2.2 Key Players** — Individual player cards grouped as STARTERS / ROTATION / BENCH:
-  - Circular photo (red border) + jersey + name + position badge (color-coded: PG=blue, SG=green, SF=orange, PF=red, C=purple)
-  - Stats row: 6 columns — MPG, RPG, PF | APG, TOV, A/TO (last 3 grouped with thin border). All with "top X%" badges (green ≥70th / gray / red ≤30th). TOV and PF inverted.
-  - Scoring panel (right side): PPG + FG% + 3FG% with "top X%" badges, mini half-court zone heatmap with shot dot overlay (green=made, red=missed), FT line
-  - Strength tags (dark pills)
+- **2.1 Projected Starting 5** — half-court formation, 18mm fix photo (vertikálisan középre), jersey badge, height, pos, `Started X/Y (Z%)` megjegyzés. Backup-ok szürke kerettel, szaggatott vonalak
+- **2.1b Rotation Patterns** — táblázat ki kit vált (full-season sub pairs, `cnt >= 1`)
+- **2.1c Lineup Net Rating** — top 10 ötös percben, last 8 meccsből, NRTG/40
+- **2.2 Key Players** (STARTERS / ROTATION / BENCH):
+  - Fotó (piros keret) + név + jersey + pozíció badge (PG kék, SG zöld, SF narancs, PF piros, C lila)
+  - **Stats row (9 col)**: `MP/G | [DREB OREB RPG] | [APG TOV A/TO] | [PF FD]` — 3 csoport vékony kerettel. Minden értéknél **"top X%" badge csak ≥80% (zöld) vagy ≤20% (piros)**; középső 60% nincs badge
+  - **Scoring panel**: PPG + FG% + 3FG% + FT% (mind badge-dzsel). Mini half-court heatmap + shot dots overlay (zöld=bedobott, piros=kihagyott)
+  - **Scout notes (ATK/DEF)** — auto-generált taktikai bullet pointok (pl. "Vezető ponterő (18.2 PPG)", "Aktív kéz (1.6 STL/g)")
+  - Strength tags (sötét pillek)
 
-### Section 3: Head-to-Head Analysis (optional, `--vs` flag)
-**All H2H data shown from VS_TEAM (user's team) perspective.** Green = good for user, red = bad for user.
-- **3.1 Match History** — H2H record summary + game table with quarter-by-quarter coloring (green/red per quarter margin, from VS_TEAM perspective)
-- **3.2 Quarter-by-Quarter Breakdown** — Color-coded margin table (rows=games, cols=Q1-Q4+Total, AVG row) — margins from VS_TEAM perspective
-- **3.3 Quarter Lineup Analysis** — Combined matchup view: left = VS_TEAM lineup | margin | right = scouted team lineup per quarter. Best/worst/toughest lineup summary below.
-- **3.4 Score Flow** — Running score differential line chart with scoring run annotations (8+ point runs)
-- **3.5 Player Performance in H2H** — Box scores for both teams from H2H matches
-- **3.6 H2H Shot Chart** — Zone breakdown table with hot/cold zone analysis
+### Section 3: Head-to-Head (optional, `--vs`)
+**VS_TEAM (felhasználó csapata) szemszögéből — zöld=jó VS_TEAM-nek, piros=rossz**
+- **3.1 Match History** — H2H rekord + meccs táblázat negyedenkénti bontással
+- **3.2 Quarter Breakdown** — margin tábla (sorok=meccsek, oszlopok=Q1-Q4+Total+AVG)
+- **3.3 Lineup Matchup** — bal=VS_TEAM lineup | margin | jobb=scouted lineup per negyed. Best/worst/toughest summary
+- **3.4 Score Flow** — futó pontkülönbség vonaldiagram, scoring run annotációk
+- **3.5 Player Performance** — box score mindkét csapat a H2H meccsekből
+- **3.6 H2H Shot Chart** — zóna breakdown tábla hot/cold zone elemzéssel
 
-## Key Technical Details
+## Key Technical Decisions
 
-### Data Sources
-- **Standings + Record**: scraped from `mkosz.hu/bajnoksag/x2526/hun2a` — **authoritative source** for W-L record, home/away record, streak. The standings table is always correct even when DB data lags behind.
-- **Match results (scores)**: scraped from `mkosz.hu/bajnoksag-musor/x2526/hun2a/phase/0/csapat/{team_id}` — **authoritative source** for per-game scores used in margin trend, PPG/OPPG, Last 5. Team ID extracted from standings team URL. Falls back to DB if scrape fails.
-- **Roster** (height, position, photos): scraped from team page URL found in standings (e.g., `mkosz.hu/csapat/x2526/hun2a/9233/vasas-akademia`)
-- **Shot charts**: `mkosz_stats.sqlite` → `shots` table (hx, hy, is_successfull, player_name, team_id)
-- **PBP events**: `mkosz_stats.sqlite` → `pbp_events` table (20 event types: CLOSE_MADE/MISS, THREE_MADE/MISS, AST, DREB, OREB, STL, BLK, TOV, FOUL, etc.)
-- **Substitutions**: `mkosz_stats.sqlite` → `substitutions` table → used for starter detection, MPG estimation, rotation patterns, lineup tracking
-- **FT enrichment**: FT data comes from PBP events (not shotchart API, which undercounts FTs)
-- **DB matches** (`mkosz_stats.sqlite` → `matches`): used as fallback for match results if MKOSZ scraping fails, and for quarter scores (not available from scrape)
+### Data Flow
+1. Standings scrape → 14 csapat rangsor + team_id kinyerés
+2. Match results scrape → margin trend / PPG / last 5
+3. `mkosz_stats.sqlite` PBP events → player stats, shotchart, possession, lineup
+4. MKOSZ player pages scrape → GP, GS, PPG, FG%, 3P%, FT%, DREB, OREB, RPG, SPG, TOV, FPG, FDPG, APG, BPG, MPG (override PBP if ≥5 GP)
+5. MKOSZ roster scrape → fotók, magasság, pozíció, jersey
 
-### Starter Detection (last 8 games)
-- From substitutions: players subbed OUT before being subbed IN = starters
-- Top 5 by frequency → projected starting five
-- Position assignment from MKOSZ roster (1-2→PG, 2-3→SG/W, 3-4→SF/F, 4-5→PF/C)
+### Starter Detection
+- **Primary**: PBP substitutions last 8 meccsből (subbed OUT before IN = starter)
+- **Rate-based**: `starts/GP`, nem raw count — 3/3 (100%) > 4/8 (50%)
+- **Case-insensitive aggregáció**: PBP inkonzisztens case (720 "Takács Dániel" vs 80 "TAKÁCS DÁNIEL") — lower() kulcs, több starts = canonical
+- **MKOSZ enrich**: ha GS≥1 és a játékos alig szerepel az utolsó 8-ban (GP<2), MKOSZ season adattal override
+- **NB2 fallback** (only `COMP.startswith("hun3")`): `player_game_stats.is_starter` scoresheet-ből
 
 ### Rotation Classification
-- **STARTERS**: top 5 from starter detection
-- **ROTATION**: 4+ games in last 8, or MPG >= 10 (non-starters)
-- **BENCH**: everyone else on current MKOSZ roster with PBP data
+- **STARTERS**: top 5 projected five-ból (pozíció-tudatos elosztás: PG + 2 wing + 2 big)
+- **ROTATION**: 4+ GP last 8 VAGY MPG≥10 VAGY (season GP≥5 ÉS PPG≥8) — utóbbi capture sérültek akik ott vannak mindig dominánsak
+- **BENCH**: mindenki más aki a current MKOSZ roster-en van
 
-### Roster Filtering
-- Only players on the **current MKOSZ roster page** appear in the report
-- Transferred/released players (in PBP but not on roster) are filtered out
-- Fuzzy name matching (`RosterMap` class) handles encoding differences (ő/õ/?, ű/û)
-- Encoding dedup merges `Pleesz Gergő`/`Pleesz Gergõ`/`Pleesz Gerg?` variants
+### Position Mapping (`pos_category`)
+- Alap (minden comp): "1-2"/"1"→guard, "2-3"→wing, "3-4"→wing_big, "4-5"→big
+- NB2 extension (only `hun3*`): singleton codes "5"→big, "4"→wing_big, "3"→wing, "1"/"2"→guard + highest-digit fallback
 
-### Percentile System
-- League-wide percentiles from all hun2a players with 10+ GP (144 players)
-- PPG percentile badge on scoring panel
-- FG% percentile badge (only for players with 30+ FGA)
-- Stats row mini-bars: green (≥70th), gray (30-70th), red (≤30th)
-- TOV and PF bars inverted (lower = better)
+### Percentile Badges
+- Csak extreme értékek: top 20% (≥80th, zöld), bottom 20% (≤20th, piros)
+- Köztes (21-79%) nincs badge
+- TOV és PF invert (kevesebb = jobb)
+- 3PT min 15 3PA, FT min 10 FTA threshold
 
-### Strength Tags (auto-computed)
-- VOLUME: PPG > 75th percentile
-- PLAYMAKER: APG > 75th percentile
-- OREB/DREB: > 70th percentile
-- STEALS: SPG > 75th percentile
-- SHOT BLOCKER: BPG > 75th percentile
-- 3PT SHOOTER: 3P% > 33% and 3PA > 2/game
-- PAINT: paint FG% > 55% and 50+ paint attempts
-- FT DRAW: FT drawn > 2.0/game
+### Possession Breakdown (1.5)
+- Event-by-event counting: made FG → sikeres, FT sequence (nem OREB után) → sikeres, missed FG (nem OREB után) → sikertelen, TOV → sikertelen
+- Standard Pace = `FGA + 0.44*FTA + TOV - OREB` (a `/g` számok erre normalizálva)
+- Event counting % az arányokhoz (pontos)
+- Pace szám az 1.6 League Comparisonben is ugyanez
 
-### Photos
-- `prepare_circular_photo()` helper: downloads from MKOSZ, square crop from top, circular mask, colored border
-- Red border for all player cards, gray border for formation backups
-- Player card photo size: card_h - 4mm (uniform 56mm cards)
+## Data Refresh Workflow
+```bash
+# 1. PBP scrape (match_exists() 0-0 meccseket újra letölti)
+cd mkosz-play-by-play && python3 parse_pbp.py --season x2526 --comp hun2a
+# 2. Stats DB import (score-ok frissülnek ON CONFLICT-ra)
+cd mkosz-stats && python3 cli.py import pbp
+# 3. Scout report
+cd mkosz-scout && python3 mockup_s1s2.py <team> [--comp <code>] [--vs <team>]
+```
 
-## Current State / Known Issues
-- **COMP**: hardcoded to `hun2a` (NB1B Piros). To support hun2b (Zöld) or hun_univn (MEFOB), need to parametrize COMP.
-- **PRIMA Akadémia**: only 4 starters detected (missing sub data for some games)
-- **Lineup NRTG**: small sample sizes (5-46 min) → high variance in NRTG/40
-- **Zone heatmap coloring**: some scan-line artifacts at zone boundaries on player mini-courts
-- **Legacy files**: `generate_nb1b_scout.py`, `generate_scout_report.py`, `mockup_section2.py` are old iterations — `mockup_s1s2.py` is the current single-file generator
+## Known Limitations
+- **NB2**: nincs PBP → 1.4 Shot Chart, 1.5 Possession, 2.1b Rotation Patterns, 2.1c Lineup NRTG, 2.2 percentile/scout notes nem elérhetőek. Csak 1.1-1.3 + 2.1 starting five (scoresheet-alapú)
+- **Playoff H2H**: csak akkor működik ha `hun2a_plya` / `hun_univ_ply` explicit be van importálva
+- **Encoding**: PDF scoresheet-ek néha ő/õ/? variánsokkal (fuzzy match kezeli)
+- **Duplikált csapatnevek a DB-ben**: `_lc_merge_key()` függvény dedup-olja (pl. `Phoenix-MT Fót` / `Phoenix-MT FÓT`)
 
-## Next Steps (potential)
-- Section 4: Defensive tendencies
-- Individual player shotcharts (already have per-player zone data)
-- Auto-generated scout notes using AI
-- NB2 scout reports (different data depth — no PBP, only scoresheet data)
-- Parametrize COMP for hun2b / hun_univn support
+## Legacy Files
+- `generate_nb1b_scout.py`, `generate_scout_report.py`, `mockup_section2.py` — régi iterációk, nem használjuk
+- Current = `mockup_s1s2.py` (egyetlen fájl, multi-competition)
